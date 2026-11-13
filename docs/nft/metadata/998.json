@@ -1,0 +1,23 @@
+{
+ "name": "Kryntar Diver #998",
+ "description": "A Kryntar diver of the deep. Holders dive in Deep Dive: Legendary holders play without limit, Free holders 3 dives a day.",
+ "image": "https://kryntar.xyz/nft/images/998.webp",
+ "attributes": [
+  {
+   "trait_type": "Character",
+   "value": "Frost Diver"
+  },
+  {
+   "trait_type": "Rarity",
+   "value": "Epic"
+  },
+  {
+   "trait_type": "Max Depth",
+   "value": "900 m"
+  },
+  {
+   "trait_type": "Depth Theme",
+   "value": "Shallow Teal"
+  }
+ ]
+}
