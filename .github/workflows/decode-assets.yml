@@ -2,7 +2,7 @@ name: Decode assets
 on:
   push:
     paths:
-      - 'docs/assets/*.b64'
+      - '**/*.b64'
   workflow_dispatch:
 permissions:
   contents: write
@@ -13,8 +13,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Decode base64 assets
         run: |
-          for f in docs/assets/*.b64; do
-            [ -e "$f" ] || continue
+          find . -name '*.b64' -not -path './.git/*' | while read -r f; do
             base64 -d "$f" > "${f%.b64}"
             rm "$f"
           done
