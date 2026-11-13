@@ -2,6 +2,7 @@ const ganache = require('ganache');
 const { ethers } = require('ethers');
 const fs = require('fs');
 const { abi, bytecode } = JSON.parse(fs.readFileSync('Kryntar.json', 'utf8'));
+const mockArt = JSON.parse(fs.readFileSync('MockRegistry.json', 'utf8'));
 const assignment = JSON.parse(fs.readFileSync('../nft-production/assignment.json', 'utf8'));
 const rarityOf = id => assignment.find(t => t.id === id).rarity;
 let pass = 0, fail = 0;
@@ -12,7 +13,9 @@ async function reverts(p, label) { try { await (await p).wait(); ok(false, label
   await server.listen(7545);
   const provider = new ethers.JsonRpcProvider('http://127.0.0.1:7545');
   const [owner, alice, bob] = await Promise.all([0, 1, 2].map(i => provider.getSigner(i)));
-  const c = await new ethers.ContractFactory(abi, bytecode, owner).deploy();
+  const mock = await new ethers.ContractFactory(mockArt.abi, mockArt.bytecode, owner).deploy();
+  await mock.waitForDeployment();
+  const c = await new ethers.ContractFactory(abi, bytecode, owner).deploy(await mock.getAddress());
   await c.waitForDeployment();
   ok((await c.mintOpen()) === false, 'mint CLOSED at deploy');
   ok((await c.deepPrice()) === ethers.parseEther('0.0005'), 'deep price 0.0005');
@@ -20,7 +23,10 @@ async function reverts(p, label) { try { await (await p).wait(); ok(false, label
   await reverts(c.connect(alice).mintFree(), 'free mint reverts while closed');
   await reverts(c.connect(alice).setMintOpen(true), 'non-owner cannot open mint');
   await (await c.setMintOpen(true)).wait();
-  // free lane
+  // free lane — Agent ID gate
+  await reverts(c.connect(alice).mintFree(), 'free mint reverts without Agent ID');
+  await (await mock.give(alice.address)).wait();
+  ok(await c.hasAgentId(alice.address), 'hasAgentId true after registry mint');
   await (await c.connect(alice).mintFree()).wait();
   const aliceId = Number(await c.tokenOfOwnerByIndex ? 0 : 0); // not enumerable; read via event instead below
   ok((await c.balanceOf(alice.address)) === 1n, 'alice has 1 after free mint');

@@ -18,6 +18,8 @@ contract Kryntar {
     bytes private constant LEGENDARY_POOL = hex"00040063007e008d009600a600b100b500b800e9010b010d011e014d0151015f0162016401680175018e0191019901cf01e50237024c024d02520270027e02a502a602a702a802aa02bc030303100328032d033e034c0357035d037e03a603ae03c103c303d503ee03f7040d041604270447045704620469049d04a104c904d004d104e8053a057305780579057d05a405b005c105c305d505d605f90626063b063f0650065f06b106be06d106e106f0071b0728073e0760076b0775078607a207ae07b307e107fd0808081308310844084d085608660874088b089808ab";
 
     address public owner;
+    address public agentRegistry; // Binance Agent ID registry (BNB mainnet: 0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F)
+    bool public freeAgentGate = true; // free lane requires holding a Binance Agent ID
     bool public mintOpen; // false at deploy — owner opens mint manually
     uint256 public deepPrice = 0.0005 ether;
     uint256 public legendaryPrice = 0.01 ether;
@@ -45,7 +47,7 @@ contract Kryntar {
 
     modifier onlyOwner() { require(msg.sender == owner, "Not owner"); _; }
 
-    constructor() { owner = msg.sender; }
+    constructor(address registry_) { owner = msg.sender; agentRegistry = registry_; }
 
     // ---------- views ----------
     function totalMinted() public view returns (uint256) { return standardMinted + legendaryMinted; }
@@ -84,6 +86,7 @@ contract Kryntar {
     // ---------- mint ----------
     function mintFree() external {
         require(mintOpen, "Mint closed");
+        require(!freeAgentGate || agentRegistry == address(0) || IAgentIdRegistry(agentRegistry).balanceOf(msg.sender) > 0, "Agent ID required");
         require(freeCount[msg.sender] < freePerWallet, "Free limit");
         require(standardMinted < STANDARD_POOL_SIZE, "Standard pool sold out");
         freeCount[msg.sender] += 1;
@@ -147,6 +150,11 @@ contract Kryntar {
 
     // ---------- owner ----------
     function setMintOpen(bool open) external onlyOwner { mintOpen = open; emit MintOpenChanged(open); }
+    function setAgentRegistry(address registry_) external onlyOwner { agentRegistry = registry_; }
+    function setFreeAgentGate(bool on) external onlyOwner { freeAgentGate = on; }
+    function hasAgentId(address who) public view returns (bool) {
+        return agentRegistry != address(0) && IAgentIdRegistry(agentRegistry).balanceOf(who) > 0;
+    }
     function setPrices(uint256 deep_, uint256 legendary_) external onlyOwner { deepPrice = deep_; legendaryPrice = legendary_; }
     function setCaps(uint256 free_, uint256 deep_, uint256 legendary_) external onlyOwner {
         freePerWallet = free_; deepPerWallet = deep_; legendaryPerWallet = legendary_;
@@ -186,6 +194,10 @@ contract Kryntar {
         while (v > 0) { b[--len] = bytes1(uint8(48 + (v % 10))); v /= 10; }
         return string(b);
     }
+}
+
+interface IAgentIdRegistry {
+    function balanceOf(address owner) external view returns (uint256);
 }
 
 interface IERC721Receiver {
