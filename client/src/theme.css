@@ -1,0 +1,92 @@
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Space+Mono:wght@400;700&display=swap');
+@import "tailwindcss";
+@import "tailwindcss-safe-area";
+
+@theme {
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 14px;
+  --text-sm--line-height: 20px;
+  --text-base: 16px;
+  --text-base--line-height: 24px;
+  --text-lg: 18px;
+  --text-lg--line-height: 28px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 32px;
+  --text-3xl: 30px;
+  --text-3xl--line-height: 36px;
+  --text-4xl: 36px;
+  --text-4xl--line-height: 40px;
+  --text-5xl: 48px;
+  --text-5xl--line-height: 52px;
+
+  /* Kryntar type: a chunky pixel face for headlines, mono for everything else. */
+  --font-display: "Press Start 2P", "Space Mono", monospace;
+  --font-mono: "Space Mono", ui-monospace, "SFMono-Regular", monospace;
+}
+
+/* Kryntar is the deep: Kryn Black, always, regardless of system scheme. */
+:root {
+  color-scheme: dark;
+  --bg: #070708;
+  --surface: #0e0d0c;
+  --text: #e8e3d8;
+  --dim: #9b968b;
+  --border: #2a2721;
+  --accent: #ff8a3d;
+  --radius: 0px;
+  --space-surface: var(--surface);
+  --space-surface-alt: #14120f;
+  --space-muted: var(--dim);
+  --space-border: var(--border);
+  --space-accent: var(--accent);
+}
+
+/* Flat black with a faint pixel-dot grid — like a dark game screen. */
+.depth-bg {
+  background-color: #070708;
+  background-image:
+    radial-gradient(rgba(232, 227, 216, 0.05) 1px, transparent 1.5px),
+    linear-gradient(180deg, #0a0a0b 0%, #070708 40%, #050506 100%);
+  background-size: 22px 22px, 100% 100%;
+}
+
+/* The one glow: Pijar Inti — copper heat. #C97B2D → #FF8A3D. */
+.core-line {
+  background: linear-gradient(90deg, #c97b2d 0%, #ff8a3d 100%);
+}
+.core-text {
+  color: #ff8a3d;
+}
+
+/* Chunky game panel: thick black frame + hard offset shadow, no blur. */
+.chunk {
+  border: 3px solid #000;
+  box-shadow: 6px 6px 0 var(--chunk-shadow, #262019);
+  background: var(--surface);
+}
+.chunk-sm {
+  border: 2px solid #000;
+  box-shadow: 4px 4px 0 var(--chunk-shadow, #262019);
+}
+
+/* Pixel art stays pixel: never smooth-scale an image or the canvas. */
+.pixelated {
+  image-rendering: pixelated;
+}
+
+/* Pixel headline helper: Press Start 2P is wide, so keep lines short. */
+.pixel-h {
+  font-family: var(--font-display);
+  line-height: 1.5;
+  letter-spacing: 0;
+}
+
+/* Phone tap targets: at least 36px tall. */
+@layer base {
+  button, [role="button"], select, summary, input:not([type="checkbox"], [type="radio"]) {
+    min-height: 2.25rem;
+  }
+}
