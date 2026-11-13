@@ -4,12 +4,47 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
     <meta name="color-scheme" content="light dark" />
-    <!-- Empty inline icon: stops the browser fetching /favicon.ico, which
-         lives outside the space's routes and fails auth. -->
-    <link rel="icon" href="data:," />
+    <meta name="theme-color" content="#070708" />
+    <meta
+      name="description"
+      content="Kryn is a gem that only forms deep underground, under extreme pressure. Play the dive game, collect Kryn gems on the way down, and save your gems. The deeper you go, the more every gem is worth — and the gems you save are planned to swap for the Kryntar token later."
+    />
+    <!-- App icons + install manifest. The files live in client/public/ and
+         reach the build output under stable, un-hashed names (see the
+         post-build step in client/build.mjs) so the install shortcut,
+         apple-touch-icon, and manifest URLs never change between builds. -->
+    <link rel="icon" type="image/png" sizes="96x96" href="./assets/favicon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="./assets/icon-192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="./assets/icon-512.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="./assets/apple-touch-icon.png" />
+    <link rel="manifest" href="./assets/manifest.webmanifest" />
+    <!-- Social share card (Open Graph + X). og:image is the absolute
+         kryntar.xyz URL of the stable-named assets/og.png in the output. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="KRYNTAR" />
+    <meta property="og:title" content="KRYNTAR — Dive Deep. Bring Up Kryn." />
+    <meta
+      property="og:description"
+      content="Kryn is a gem that only forms deep underground, under extreme pressure. Play the dive game, collect Kryn gems on the way down, and save your gems. The deeper you go, the more every gem is worth — and the gems you save are planned to swap for the Kryntar token later."
+    />
+    <meta property="og:url" content="https://kryntar.xyz/" />
+    <meta property="og:image" content="https://kryntar.xyz/assets/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="KRYNTAR — the Crystal Diver and a copper Kryn gem. Dive Deep. Bring Up Kryn."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="KRYNTAR — Dive Deep. Bring Up Kryn." />
+    <meta
+      name="twitter:description"
+      content="Kryn is a gem that only forms deep underground, under extreme pressure. Play the dive game, collect Kryn gems on the way down, and save your gems. The deeper you go, the more every gem is worth — and the gems you save are planned to swap for the Kryntar token later."
+    />
+    <meta name="twitter:image" content="https://kryntar.xyz/assets/og.png" />
     <title>Kryntar</title>
     
-  <link rel="stylesheet" crossorigin href="./assets/index-xjknbast.css"><script type="module" crossorigin src="./assets/index-j1cxz7sh.js"></script></head>
+  <link rel="stylesheet" crossorigin href="./assets/index-xjknbast.css"><script type="module" crossorigin src="./assets/index-w1gv0z6k.js"></script></head>
   <body>
     <div
       data-generated-space-root=""
