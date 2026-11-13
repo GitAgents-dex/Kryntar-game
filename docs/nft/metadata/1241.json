@@ -1,0 +1,23 @@
+{
+ "name": "Kryntar Diver #1241",
+ "description": "A Kryntar diver of the deep. Holders dive in Deep Dive: Legendary holders play without limit, Free holders 3 dives a day.",
+ "image": "https://kryntar.xyz/nft/images/1241.webp",
+ "attributes": [
+  {
+   "trait_type": "Character",
+   "value": "Bee Diver"
+  },
+  {
+   "trait_type": "Rarity",
+   "value": "Common"
+  },
+  {
+   "trait_type": "Max Depth",
+   "value": "300 m"
+  },
+  {
+   "trait_type": "Depth Theme",
+   "value": "Shallow Teal"
+  }
+ ]
+}

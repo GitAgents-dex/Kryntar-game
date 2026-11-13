@@ -1,0 +1,23 @@
+{
+ "name": "Kryntar Diver #1645",
+ "description": "A Kryntar diver of the deep. Holders dive in Deep Dive: Legendary holders play without limit, Free holders 3 dives a day.",
+ "image": "https://kryntar.xyz/nft/images/1645.webp",
+ "attributes": [
+  {
+   "trait_type": "Character",
+   "value": "Octo Friend"
+  },
+  {
+   "trait_type": "Rarity",
+   "value": "Rare"
+  },
+  {
+   "trait_type": "Max Depth",
+   "value": "600 m"
+  },
+  {
+   "trait_type": "Depth Theme",
+   "value": "Heart Gold"
+  }
+ ]
+}
