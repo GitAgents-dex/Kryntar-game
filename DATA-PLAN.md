@@ -1,5 +1,40 @@
 # Data Plan
 
+## Edit — DEEP DIVE FULL PACKAGE (2026-11-14, user: "Paket lengkap + aksi, event & suara")
+
+The game was unplayable on the static site: START DIVE asked the server
+(`startPlay` via `./actions`), which does not exist on GitHub Pages. The
+game now detects the missing server and falls back to local mode, and
+every dive leaves something behind on the device.
+
+- Local mode: a `./actions` probe on mount (404 = no server), the access
+  query failing, or `startPlay` throwing all switch the game to local
+  mode — dives start immediately, unlimited, no diver name needed. The
+  server path is untouched where a server answers. In local mode the
+  access panel, game-over panel and save form say so honestly, and
+  scores/gems are saved on the device only (Post to X without a rank).
+- Gem bank + missions (`client/src/progress.ts`, localStorage only):
+  every finished dive banks its gems per kind (`kryntar-gem-bank`),
+  updates dive stats (`kryntar-dive-stats`: runs, best depth, best
+  combo), and keeps the legacy totals (`kryntar-gems-total`,
+  `kryntar-dive-best`). The MY GEMS panel shows the per-kind bank; the
+  new MISSIONS panel tracks 5 derived missions (FIRST HAUL 25 gems,
+  DEEP DELVER 1,800 m, HEART HUNTER 10 Heart Kryn, COMBO MASTER x6,
+  CENTURY CLUB 500+ score). The old submit-only increment in
+  SaveDiveForm was removed so gems are counted once, in `recordRun`.
+- Action: SHIFT / DASH button fires a 0.45s burst (2.2x speed, brief
+  invulnerability, 4s cooldown, HUD cell + trail sparks). Twice a dive a
+  random 8s event bends the odds: GEM RUSH (fast gem-only spawns), JELLY
+  SWARM (fast jellyfish, gems x2), BUBBLE SURGE (air floods, no rocks).
+  Collect/hit/dash particle bursts, a tiny WebAudio synth (gem tones per
+  kind, combo arpeggio, hit/air/dash/event/layer/game-over sounds, SOUND
+  on/off button, no audio assets). `RunResult` gained `maxCombo`.
+- Copy updated everywhere the game is described (hero stat, game intro,
+  rules paragraph, FAQ answer): local mode, dash, events, missions.
+- Verified: `tsc --noEmit` clean (client + server, strict); bundle
+  contains the new strings and none of the removed ones; docs/ rebuilt
+  (index-ye5pnbp3.js).
+
 ## Edit — BOARD GOES ON-CHAIN (2026-11-14, user: "Ubah board jadi data on-chain")
 
 The leaderboard no longer depends on the server (`getLeaderboard` via

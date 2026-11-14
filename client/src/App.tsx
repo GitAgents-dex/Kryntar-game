@@ -9,10 +9,18 @@ import { SafeAreaTopScrim } from "@hatch/space-sdk/client";
 import { api, type ApiResponse } from "./api";
 import {
   DeepDive,
+  type GemKind,
   type PlayAccess,
   type RunResult,
   type StartVerdict,
 } from "./game";
+import {
+  loadProgress,
+  MISSIONS,
+  missionProgress,
+  recordRun,
+  type ProgressSnapshot,
+} from "./progress";
 
 import heroImg from "./assets/media-generation-kryntar-hero-gem-0-6c686306-0a8f-4e15-8016-f589684203cf.webp";
 import paleImg from "./assets/media-generation-kryntar-gem-pale-0-58facf25-3156-49c3-b7fd-750c502494e8.webp";
@@ -619,7 +627,7 @@ const FAQS = [
   },
   {
     q: "How do I play Deep Dive?",
-    a: "Set your diver name and holder tier in the access panel, then press START DIVE. You get 60 seconds and 3 oxygen. Drag on the arena or use the arrow keys / A and D to move. Grab the gems rising past you and the air bubbles that refill oxygen; dodge the falling rocks and the jellyfish. The deeper you go, the darker the water, the faster oxygen drains — and the more every gem is worth.",
+    a: "Press START DIVE. You get 60 seconds and 3 oxygen. Drag on the arena or use the arrow keys / A and D to move; SHIFT or the DASH button gives you a quick burst. Grab the gems rising past you and the air bubbles that refill oxygen; dodge the falling rocks and the jellyfish. The deeper you go, the darker the water, the faster oxygen drains — and the more every gem is worth. Mid-dive events — GEM RUSH, JELLY SWARM, BUBBLE SURGE — change the odds for a few seconds. On this page the game runs in local mode: unlimited practice dives, with gems, scores and missions saved on your device.",
   },
   {
     q: "How many times can I play?",
@@ -707,6 +715,15 @@ function loadWallet(): string {
   return localStorage.getItem("kryntar-wallet") ?? "";
 }
 
+/** Local mode has no server, so plays are unlimited practice runs that
+ *  cannot be submitted anywhere — the access object says exactly that. */
+const LOCAL_ACCESS: PlayAccess = {
+  playsLeft: null,
+  playsLimit: null,
+  canSubmit: false,
+  resetsAt: "",
+};
+
 
 
 function xPostUrl(text: string): string {
@@ -723,6 +740,7 @@ function SaveDiveForm({
   onNameChange,
   onWalletChange,
   onSaved,
+  localMode,
 }: {
   run: RunResult | null;
   name: string;
@@ -731,6 +749,7 @@ function SaveDiveForm({
   onNameChange: (v: string) => void;
   onWalletChange: (v: string) => void;
   onSaved: (rank: number | null) => void;
+  localMode: boolean;
 }) {
   const [message, setMessage] = useState<string | null>(null);
   const [savedRank, setSavedRank] = useState<number | null>(null);
@@ -747,9 +766,6 @@ function SaveDiveForm({
     }) => await api.submitScore(args),
     onSuccess: (res) => {
       localStorage.setItem("kryntar-name", name.trim());
-      const prev = Number(localStorage.getItem("kryntar-gems-total") ?? 0);
-      const safePrev = Number.isFinite(prev) ? prev : 0;
-      localStorage.setItem("kryntar-gems-total", String(safePrev + (run?.gems ?? 0)));
       setSavedRank(res.rank);
       setMessage(
         res.rank
@@ -763,6 +779,26 @@ function SaveDiveForm({
   });
 
   if (!run) return null;
+
+  if (localMode) {
+    return (
+      <div
+        className="chunk-sm mt-6 bg-[#0B0B0C] p-4 sm:p-5"
+        style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+        role="status"
+      >
+        <p className="font-mono text-xs font-bold uppercase tracking-[0.2em]">
+          Saved on this device
+        </p>
+        <p className="mt-2 text-sm leading-relaxed text-[var(--dim)]">
+          You scored {run.score} and reached {run.depth} m — {run.gems} Kryn
+          gems added to your gem bank below. There is no server on this
+          page, so dives are saved on this device only and cannot be
+          submitted to an online leaderboard.
+        </p>
+      </div>
+    );
+  }
 
   if (tier === "guest") {
     return (
@@ -864,6 +900,78 @@ function SaveDiveForm({
   );
 }
 
+/* -------------------------------- missions ------------------------------- */
+
+const BANK_KINDS: { id: GemKind; label: string; color: string }[] = [
+  { id: "pale", label: "Pale Kryn", color: "#D8D2C4" },
+  { id: "cracked", label: "Cracked Kryn", color: "#9B968B" },
+  { id: "ember", label: "Ember Kryn", color: "#FF8A3D" },
+  { id: "heart", label: "Heart Kryn", color: "#FFC46B" },
+];
+
+function MissionsPanel({
+  progress,
+  justCompleted,
+}: {
+  progress: ProgressSnapshot;
+  justCompleted: string[];
+}) {
+  return (
+    <div
+      className="chunk-sm mt-6 bg-[#0B0B0C] p-4 sm:p-5"
+      style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+    >
+      <h3 className="pixel-h text-xs sm:text-sm">MISSIONS</h3>
+      <p className="mt-2 max-w-xl text-sm leading-relaxed text-[var(--dim)]">
+        Finish missions by diving. Progress is saved on this device only.
+      </p>
+      <ul className="mt-4 grid gap-3">
+        {MISSIONS.map((m) => {
+          const done = missionProgress(m, progress) >= m.target;
+          const fresh = justCompleted.includes(m.id);
+          const pct = Math.round(
+            (missionProgress(m, progress) / m.target) * 100,
+          );
+          return (
+            <li
+              key={m.id}
+              className={`border-2 px-3 py-2.5 ${
+                fresh
+                  ? "border-[#FFC46B] bg-[#241A08]"
+                  : done
+                    ? "border-[#3D382E] bg-[#171410]"
+                    : "border-[#3D382E] bg-[var(--surface)]"
+              }`}
+            >
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <span className="font-mono text-xs font-bold tracking-[0.12em]">
+                  {m.title}
+                </span>
+                <span className="font-mono text-[11px] text-[var(--dim)]">
+                  {done ? (
+                    <span className="font-bold text-[#FFC46B]">
+                      {fresh ? "JUST COMPLETED ✓" : "DONE ✓"}
+                    </span>
+                  ) : (
+                    `${missionProgress(m, progress)} / ${m.target}`
+                  )}
+                </span>
+              </div>
+              <span className="mt-1 block text-sm text-[var(--dim)]">{m.desc}</span>
+              <span className="mt-2 block h-2 bg-[#262019]">
+                <span
+                  className="block h-full bg-[#FF8A3D]"
+                  style={{ width: `${pct}%` }}
+                />
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 /* ---------------------------- access panel ------------------------------- */
 
 function AccessPanel({
@@ -875,6 +983,7 @@ function AccessPanel({
   onTierChange,
   access,
   accessLoading,
+  localMode,
 }: {
   name: string;
   wallet: string;
@@ -884,6 +993,7 @@ function AccessPanel({
   onTierChange: (t: PlayerTier) => void;
   access: AccessData | null;
   accessLoading: boolean;
+  localMode: boolean;
 }) {
   const tiers: { id: PlayerTier; label: string; rule: string }[] = [
     { id: "legendary", label: "LEGENDARY NFT", rule: "Unlimited plays · submit scores" },
@@ -898,9 +1008,11 @@ function AccessPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="pixel-h text-xs sm:text-sm">WHO IS DIVING?</h3>
         <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-[var(--dim)]">
-          {accessLoading
-            ? "Checking plays…"
-            : access
+          {localMode
+            ? "Local mode — unlimited practice"
+            : accessLoading
+              ? "Checking plays…"
+              : access
               ? access.plays_left === null
                 ? "Plays today: unlimited"
                 : `Plays left today: ${access.plays_left}/${access.plays_limit ?? 0}`
@@ -968,11 +1080,9 @@ function AccessPanel({
         })}
       </div>
       <p className="mt-4 font-mono text-[11px] leading-relaxed text-[var(--dim)]">
-        Plays are counted on the server per name + wallet and reset at 00:00
-        UTC. Honest note: holder status is self-declared for now. The
-        Kryntar contract is live on BNB Chain, and on-chain holder
-        verification is being connected — it is not active yet, so nothing
-        is being verified against your wallet today.
+        {localMode
+          ? "Local mode: no server on this page, so plays are unlimited and counted on this device only. Your name and tier above are just your diver identity — nothing is verified against your wallet today."
+          : "Plays are counted on the server per name + wallet and reset at 00:00 UTC. Honest note: holder status is self-declared for now. The Kryntar contract is live on BNB Chain, and on-chain holder verification is being connected — it is not active yet, so nothing is being verified against your wallet today."}
       </p>
     </div>
   );
@@ -1685,10 +1795,13 @@ export function App() {
     const v = Number(localStorage.getItem("kryntar-gems-total") ?? 0);
     return Number.isFinite(v) ? v : 0;
   });
-  const [bestScore] = useState<number>(() => {
+  const [bestScore, setBestScore] = useState<number>(() => {
     const v = Number(localStorage.getItem("kryntar-dive-best") ?? 0);
     return Number.isFinite(v) ? v : 0;
   });
+  const [localMode, setLocalMode] = useState(false);
+  const [progress, setProgress] = useState<ProgressSnapshot>(loadProgress);
+  const [justCompleted, setJustCompleted] = useState<string[]>([]);
   const queryClient = useQueryClient();
 
   const trimmedName = playerName.trim();
@@ -1701,8 +1814,32 @@ export function App() {
   const accessQuery = useQuery({
     queryKey: ["access", trimmedName.toLowerCase(), trimmedWallet.toLowerCase(), playerTier],
     queryFn: () => api.getAccess(accessArgs),
-    enabled: trimmedName.length > 0,
+    enabled: trimmedName.length > 0 && !localMode,
+    retry: 1,
   });
+  useEffect(() => {
+    if (accessQuery.isError) setLocalMode(true);
+  }, [accessQuery.isError]);
+  // Static hosting (GitHub Pages) has no ./actions endpoint: a probe POST
+  // 404s there, while the space server answers. Detect once on mount so
+  // the game is playable even before a diver name is typed.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("./actions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    })
+      .then((r) => {
+        if (!cancelled && r.status === 404) setLocalMode(true);
+      })
+      .catch(() => {
+        if (!cancelled) setLocalMode(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const access: PlayAccess | null = accessQuery.data
     ? {
         playsLeft: accessQuery.data.plays_left,
@@ -1713,17 +1850,24 @@ export function App() {
     : null;
 
   const handleStartRequest = async (): Promise<StartVerdict> => {
-    const res = await api.startPlay(accessArgs);
-    void queryClient.invalidateQueries({ queryKey: ["access"] });
-    return {
-      allowed: res.allowed,
-      access: {
-        playsLeft: res.access.plays_left,
-        playsLimit: res.access.plays_limit,
-        canSubmit: res.access.can_submit,
-        resetsAt: res.access.resets_at,
-      },
-    };
+    try {
+      const res = await api.startPlay(accessArgs);
+      void queryClient.invalidateQueries({ queryKey: ["access"] });
+      return {
+        allowed: res.allowed,
+        access: {
+          playsLeft: res.access.plays_left,
+          playsLimit: res.access.plays_limit,
+          canSubmit: res.access.can_submit,
+          resetsAt: res.access.resets_at,
+        },
+      };
+    } catch {
+      // No server reachable (static hosting): fall back to local mode and
+      // let the dive start — it is saved on the device, not submitted.
+      setLocalMode(true);
+      return { allowed: true, access: LOCAL_ACCESS };
+    }
   };
 
   const changeName = (v: string) => {
@@ -1787,7 +1931,7 @@ export function App() {
 
           <dl className="chunk mt-8 grid grid-cols-2 gap-px bg-black font-mono lg:grid-cols-4" style={{ "--chunk-shadow": "#C97B2D" } as CSSProperties}>
             {[
-              ["PLAY", "Holders dive more — see access"],
+              ["PLAY", "Unlimited practice dives"],
               ["ONE DIVE", "60 seconds · 3 oxygen"],
               ["GEMS", "4 types · deeper = rarer"],
               ["TOKEN", "Not launched yet"],
@@ -1835,13 +1979,13 @@ export function App() {
           <SectionHead
             kicker="The Game"
             title="DEEP DIVE"
-            intro="One dive, 60 seconds. Gems rise past you as you sink — grab them, dodge the rocks, watch your oxygen. Your score is your depth plus your gems, and every gem is multiplied by the layer you are in: ×1 at the Surface, up to ×5 in the Heart. How often you can dive depends on your tier: legendary NFT holders play without limits, free-NFT holders get 3 plays a day, and guests get 1 practice play a day — plays are counted on the server and reset at 00:00 UTC."
+            intro="One dive, 60 seconds. Gems rise past you as you sink — grab them, dodge the rocks, watch your oxygen. Your score is your depth plus your gems, and every gem is multiplied by the layer you are in: ×1 at the Surface, up to ×5 in the Heart. On this page dives run in local mode: unlimited practice, with gems, scores and missions saved on your device. Where a server is connected, legendary NFT holders play without limits, free-NFT holders get 3 plays a day, and guests get 1 practice play a day — plays reset at 00:00 UTC."
           />
           <div className="chunk mt-8 p-2 sm:p-6" style={{ "--chunk-shadow": "#C97B2D" } as CSSProperties}>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <h3 className="pixel-h text-xs sm:text-sm">DEEP DIVE — ONE RUN</h3>
               <span className="chunk-sm bg-[#FF8A3D] px-2.5 py-1 font-mono text-[11px] font-bold uppercase tracking-[0.15em] text-[#070708]" style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}>
-                Legendary: unlimited · Free NFT: 3/day
+                {localMode ? "Local mode — unlimited practice" : "Legendary: unlimited · Free NFT: 3/day"}
               </span>
             </div>
             <AccessPanel
@@ -1853,6 +1997,7 @@ export function App() {
               onTierChange={changeTier}
               access={accessQuery.data ?? null}
               accessLoading={accessQuery.isFetching}
+              localMode={localMode}
             />
             <p className="mb-4 max-w-3xl text-sm leading-relaxed text-[var(--dim)]">
               You have <strong className="text-[var(--text)]">60 seconds</strong> and{" "}
@@ -1860,20 +2005,31 @@ export function App() {
               Cracked +20, Ember +30, Heart +50 — times the layer multiplier. Oxygen
               drains faster the deeper you go, so grab the rising air bubbles. A
               falling rock costs 1 oxygen and 15 points; a jellyfish sting costs 1
-              oxygen. Chain gems without a break for combo bonuses.
+              oxygen. Chain gems without a break for combo bonuses. Press SHIFT
+              or the DASH button for a quick burst that makes you briefly
+              untouchable. Mid-dive events shake things up: GEM RUSH floods the
+              water with gems, JELLY SWARM doubles every gem while the
+              jellyfish close in, and BUBBLE SURGE fills the water with air.
             </p>
             <DeepDive
               onFinish={(result) => {
                 setLastRun(result);
                 setSubmittedRank(null);
+                const next = recordRun(result);
+                setProgress(next.snapshot);
+                setJustCompleted(next.newlyCompleted);
+                setGemsTotal(next.snapshot.total);
+                setBestScore(next.snapshot.best);
               }}
-              access={trimmedName ? access : null}
-              accessLoading={accessQuery.isFetching}
+              access={localMode ? LOCAL_ACCESS : trimmedName ? access : null}
+              accessLoading={localMode ? false : accessQuery.isFetching}
               onStartRequest={async (): Promise<StartVerdict> => {
+                if (localMode) return { allowed: true, access: LOCAL_ACCESS };
                 if (!trimmedName) return { allowed: false, access: null };
                 return handleStartRequest();
               }}
               submittedRank={submittedRank}
+              localMode={localMode}
             />
             <SaveDiveForm
               run={lastRun}
@@ -1887,7 +2043,9 @@ export function App() {
                 const v = Number(localStorage.getItem("kryntar-gems-total") ?? 0);
                 setGemsTotal(Number.isFinite(v) ? v : 0);
               }}
+              localMode={localMode}
             />
+            <MissionsPanel progress={progress} justCompleted={justCompleted} />
 
             {/* my gems */}
             <div className="chunk-sm mt-6 bg-[#0B0B0C] p-4 sm:p-5" style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}>
@@ -1895,8 +2053,8 @@ export function App() {
                 <div>
                   <h3 className="pixel-h text-xs sm:text-sm">MY GEMS</h3>
                   <p className="mt-2 max-w-xl text-sm leading-relaxed text-[var(--dim)]">
-                    Gems from the dives you submitted on this device. They
-                    are counted here, under your name.
+                    Gems from every dive you finished on this device — server
+                    or not. They are counted here, under your name.
                   </p>
                 </div>
                 <div className="flex gap-6 font-mono">
@@ -1910,6 +2068,21 @@ export function App() {
                   </div>
                 </div>
               </div>
+              <ul className="mt-4 grid grid-cols-2 gap-2 font-mono text-sm sm:grid-cols-4">
+                {BANK_KINDS.map((k) => (
+                  <li key={k.id} className="flex items-center justify-between gap-2">
+                    <span>
+                      <span
+                        className="mr-2 inline-block h-2.5 w-2.5"
+                        style={{ background: k.color }}
+                        aria-hidden="true"
+                      />
+                      {k.label}
+                    </span>
+                    <span className="font-bold">× {progress.bank[k.id]}</span>
+                  </li>
+                ))}
+              </ul>
               <div className="core-line mt-4 h-0.5 w-full opacity-70" aria-hidden="true" />
               <p className="mt-4 text-sm leading-relaxed text-[var(--dim)]">
                 <strong className="text-[var(--text)]">Gems → token, later.</strong>{" "}
