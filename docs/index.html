@@ -54,6 +54,22 @@
     ></div>
     <script>
       (() => {
+        const contract = "0xB77D3495d3ed4427dA78c9D0f7Cb76C21c23D9fe";
+        const claimContract = "0xF423486D0B021E457c0132b3144728DEa105f028";
+        const simplePrompts = {
+          "SURFACE CLAIM": `On BNB Chain (chainId 56), use contract ${contract}.\nCall mintFree() and pay 0 wei. Only continue if mintOpen() is true and this wallet has a Binance Agent ID; otherwise stop.\nExecute once and return the transaction hash.`,
+          "DEEP FORGE": `On BNB Chain (chainId 56), use contract ${contract}.\nCall mintDeep() and pay exactly 500000000000000 wei. Only continue if mintOpen() is true; otherwise stop.\nExecute once and return the transaction hash.`,
+          "LEGENDARY MINT": `On BNB Chain (chainId 56), use contract ${contract}.\nCall mintLegendary() and pay exactly 10000000000000000 wei. Only continue if mintOpen() is true; otherwise stop.\nExecute once and return the transaction hash.`,
+          "CLAIM $KRYN": `On BNB Chain (chainId 56), use claim contract ${claimContract}.\nReplace <ID> with the Diver number, then call claim(<ID>) and pay exactly 100000000000000 wei. Only continue if claimed(<ID>) is false and this wallet owns Diver #<ID>; otherwise stop.\nExecute once and return the transaction hash.`,
+        };
+        const simplifyAgentPrompts = () => {
+          document.querySelectorAll("#agents article").forEach((card) => {
+            const title = card.querySelector("h3")?.textContent?.trim();
+            const prompt = title ? simplePrompts[title] : undefined;
+            const pre = card.querySelector("pre");
+            if (prompt && pre) pre.textContent = prompt;
+          });
+        };
         const addKryntarXLink = () => {
           const footer = document.querySelector("footer");
           if (!footer || footer.querySelector("[data-kryntar-x-link]")) return;
@@ -66,8 +82,12 @@
           link.textContent = "Follow Kryntar on X";
           footer.appendChild(link);
         };
-        new MutationObserver(addKryntarXLink).observe(document.body, { childList: true, subtree: true });
-        addKryntarXLink();
+        const syncPage = () => {
+          addKryntarXLink();
+          simplifyAgentPrompts();
+        };
+        new MutationObserver(syncPage).observe(document.body, { childList: true, subtree: true });
+        syncPage();
       })();
     </script>
   </body>

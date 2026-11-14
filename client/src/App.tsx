@@ -957,21 +957,15 @@ function friendlyClaimError(err: unknown, id: number): string {
  *  No domain names, ever. The fee is the live value read from the
  *  contract at copy time. */
 function claimPromptFor(id: number, feeWei: bigint): string {
-  return `Claim $KRYN for Diver #${id} on BNB Chain (chainId 56). Claim contract: ${KRYN_CLAIM_ADDRESS}.\nCheck claimed(${id}) is false and this wallet holds Diver #${id}. If already claimed or not held, STOP and report to me.\nCall claim(${id}) and pay exactly ${feeWei.toString()} wei.\nExecute once, then send me the transaction hash.`;
+  return `On BNB Chain (chainId 56), use claim contract ${KRYN_CLAIM_ADDRESS} to claim $KRYN for Diver #${id}.\nCall claim(${id}) and pay exactly ${feeWei.toString()} wei. Only continue if claimed(${id}) is false and this wallet owns Diver #${id}; otherwise stop.\nExecute once and return the transaction hash.`;
 }
-
 /* ---------------------------- agent prompts ------------------------------ */
-
-/** Simple direct-execute agent prompts: exactly 4 lines each, contract
- *  address + function + value only. No domain names, ever. The claim
- *  prompt uses <ID> as the Diver number placeholder. */
-const AGENT_PROMPT_FREE = `Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: ${CONTRACT_ADDRESS}.\nCheck mintOpen() is true and this wallet holds a Binance Agent ID. If the mint is closed or there is no Agent ID, STOP and report to me.\nCall mintFree() and pay exactly 0 wei.\nExecute once, then send me the transaction hash.`;
-
-const AGENT_PROMPT_DEEP = `Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: ${CONTRACT_ADDRESS}.\nCheck mintOpen() is true. If the mint is closed, STOP and report to me.\nCall mintDeep() and pay exactly 500000000000000 wei.\nExecute once, then send me the transaction hash.`;
-
-const AGENT_PROMPT_LEGENDARY = `Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: ${CONTRACT_ADDRESS}.\nCheck mintOpen() is true. If the mint is closed, STOP and report to me.\nCall mintLegendary() and pay exactly 10000000000000000 wei — guaranteed Legendary.\nExecute once, then send me the transaction hash.`;
-
-const AGENT_PROMPT_CLAIM = `Claim $KRYN for Diver #<ID> on BNB Chain (chainId 56). Claim contract: ${KRYN_CLAIM_ADDRESS}.\nReplace <ID> with the Diver number. Check claimed(<ID>) is false and this wallet holds Diver #<ID>. If already claimed or not held, STOP and report to me.\nCall claim(<ID>) and pay exactly 100000000000000 wei.\nExecute once, then send me the transaction hash.`;
+/** Simple direct-execute agent prompts. Each names the chain, contract,
+ *  function, value, and one safety check. The claim prompt uses <ID>. */
+const AGENT_PROMPT_FREE = `On BNB Chain (chainId 56), use contract ${CONTRACT_ADDRESS}.\nCall mintFree() and pay 0 wei. Only continue if mintOpen() is true and this wallet has a Binance Agent ID; otherwise stop.\nExecute once and return the transaction hash.`;
+const AGENT_PROMPT_DEEP = `On BNB Chain (chainId 56), use contract ${CONTRACT_ADDRESS}.\nCall mintDeep() and pay exactly 500000000000000 wei. Only continue if mintOpen() is true; otherwise stop.\nExecute once and return the transaction hash.`;
+const AGENT_PROMPT_LEGENDARY = `On BNB Chain (chainId 56), use contract ${CONTRACT_ADDRESS}.\nCall mintLegendary() and pay exactly 10000000000000000 wei. Only continue if mintOpen() is true; otherwise stop.\nExecute once and return the transaction hash.`;
+const AGENT_PROMPT_CLAIM = `On BNB Chain (chainId 56), use claim contract ${KRYN_CLAIM_ADDRESS}.\nReplace <ID> with the Diver number, then call claim(<ID>) and pay exactly 100000000000000 wei. Only continue if claimed(<ID>) is false and this wallet owns Diver #<ID>; otherwise stop.\nExecute once and return the transaction hash.`;
 
 /* ---------------------------------- faq ---------------------------------- */
 
@@ -2550,8 +2544,8 @@ function PromptCard({
         {(
           steps ?? [
             "Pick a lane — free or paid.",
-            "Copy the prompt and paste it to your agent.",
-            "The mint is open — the agent checks mintOpen(), then executes right away.",
+            "Copy the short prompt and paste it to your agent.",
+            "The agent checks the safety rule, then executes once.",
           ]
         ).map((s) => (
           <li key={s}>{s}</li>
@@ -3636,9 +3630,9 @@ export function App() {
           </p>
           <h3 id="agents" className="pixel-h mt-10 scroll-mt-24 text-sm sm:text-base">AGENTS</h3>
           <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[var(--dim)]">
-            Agents welcome — mint or claim with a short prompt. Copy one, paste
-            it to your agent, and it executes right away. Every prompt names
-            the live contract address and stops if the on-chain check fails.
+            Copy a short prompt, paste it to your agent, and let it execute one
+            transaction. Every prompt includes the live contract and a safety
+            check.
           </p>
           <div className="mt-5 grid gap-6 md:grid-cols-2">
             <PromptCard title="SURFACE CLAIM" price="0 BNB" text={AGENT_PROMPT_FREE} />
@@ -3649,9 +3643,9 @@ export function App() {
               price="0.0001 BNB"
               text={AGENT_PROMPT_CLAIM}
               steps={[
-                "Replace <ID> with your Diver's number.",
+                "Replace <ID> with your Diver number.",
                 "Copy the prompt and paste it to your agent.",
-                "One claim per Diver — the agent checks claimed() first.",
+                "The agent stops if the Diver is already claimed or not yours.",
               ]}
             />
           </div>
