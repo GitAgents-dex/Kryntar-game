@@ -1,5 +1,22 @@
 # Data Plan
 
+## Edit — $KRYN HOLDER CLAIM WIRED INTO THE SITE (2026-11-14, token + claim deployed by the user, addresses verified on-chain)
+
+$KRYN (0x651a15460F62dF9d9B77ea0324fc948F6b94b5fA) and KrynClaim
+(0xF423486D0B021E457c0132b3144728DEa105f028) are live on BNB Chain. The
+homepage gains a CLAIM $KRYN section (nav: Claim, between Scores and
+World): connect wallet (chain 56, auto-switch), the wallet's Divers are
+found with the holder board's Multicall3 2-pass enumeration (IDs then
+owners), claimed(tokenId) is checked per owned ID, and each unclaimed
+Diver gets a Claim button sending claim(tokenId) with exactly the live
+CLAIM_FEE value, plus a copyable 4-line direct-execute agent prompt per
+ID (no domain). REWARD, CLAIM_FEE, claimedCount and the remaining pool
+(token balance of the claim contract) are read live, never hardcoded;
+pending/success/failure states per row, and a mint CTA when the wallet
+holds 0 Divers. Copy that said the token was not launched (hero stat +
+intro, My Gems box, swap FAQ) now says $KRYN is live and that the local
+gem bank does not convert. Bundle index-qzw7sk11.js / index-szjfhwsb.css.
+
 ## Edit — $KRYN TOKEN + HOLDER CLAIM CONTRACTS (2026-11-14, user approved the token design draft)
 
 Kryn ($KRYN) is the Kryntar Divers game token. Total supply 222,222,222
