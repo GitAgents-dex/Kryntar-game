@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deploy Token $KRYN</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #070708; color: #E8E3D8; font-family: monospace; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; color: #FF8A3D; letter-spacing: .05em; }
+  h2 { font-size: 14px; color: #FFC46B; margin-top: 28px; }
+  p, li { font-size: 14px; line-height: 1.6; color: #B9B2A4; }
+  .card { background: #0B0B0C; border: 3px solid #000; box-shadow: 4px 4px 0 #262019; padding: 16px; margin-top: 16px; }
+  .addr { word-break: break-all; color: #E8E3D8; font-size: 13px; }
+  button { display: block; width: 100%; margin-top: 12px; padding: 15px; font-family: monospace; font-size: 15px; font-weight: bold; text-transform: uppercase; letter-spacing: .1em; border: 3px solid #000; cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  #connectBtn { background: #E8E3D8; color: #070708; }
+  #deployBtn { background: #FF8A3D; color: #070708; }
+  .copyBtn { background: #262019; color: #E8E3D8; }
+  input { width: 100%; padding: 12px; margin-top: 8px; background: #070708; border: 2px solid #3D382E; color: #E8E3D8; font-family: monospace; font-size: 13px; }
+  label { font-size: 11px; text-transform: uppercase; letter-spacing: .15em; color: #9B968B; }
+  #status { white-space: pre-wrap; word-break: break-all; font-size: 13px; line-height: 1.7; }
+  .ok { color: #7BD88A; } .err { color: #FF7A6B; } .warn { color: #FFC46B; }
+  a { color: #FF8A3D; }
+  .step { color: #E8E3D8; }
+</style>
+</head>
+<body>
+<h1>DEPLOY TOKEN $KRYN</h1>
+<p>Token game Kryntar Divers — <b class="step">Kryn ($KRYN)</b>, supply tetap <b class="step">222.222.222</b>. Deploy ini mengirim <b class="step">3 transaksi</b>: (1) deploy token, (2) deploy kontrak klaim, (3) isi kontrak klaim dengan <b class="step">55.550.000 $KRYN</b> (25.000 x 2.222 Diver). Sisanya (likuiditas, musim skor, owner) tetap di wallet kamu.</p>
+
+<div class="card">
+  <h2>1. CONNECT WALLET</h2>
+  <p>Buka halaman ini di <b class="step">browser dalam aplikasi wallet</b> (bukan Chrome biasa). Wallet harus di BNB Chain.</p>
+  <button id="connectBtn" type="button">Connect Wallet</button>
+  <p id="walletLine">Belum connect.</p>
+</div>
+
+<div class="card">
+  <h2>2. PERIKSA PARAMETER</h2>
+  <label>Alamat NFT Kryntar Divers (tidak bisa diubah)</label>
+  <input id="nftInput" type="text" readonly value="0xB77D3495d3ed4427dA78c9D0f7Cb76C21c23D9fe">
+  <p>Chain: <b class="step">BNB Chain (56)</b> &middot; Klaim: 25.000 $KRYN per Diver, sekali per NFT, fee 0,0001 BNB &middot; Token: tanpa pajak, tanpa mint tambahan.</p>
+</div>
+
+<div class="card">
+  <h2>3. DEPLOY (3 TRANSAKSI)</h2>
+  <p>Setiap transaksi minta konfirmasi di wallet kamu. Gas ditanggung kamu. Jangan tutup halaman sampai selesai.</p>
+  <button id="deployBtn" type="button" disabled>Deploy $KRYN + Klaim</button>
+  <p id="status">Menunggu connect&hellip;</p>
+</div>
+
+<div class="card" id="resultCard" style="display:none">
+  <h2>SELESAI</h2>
+  <p>Alamat token $KRYN:</p>
+  <p class="addr" id="tokenAddr"></p>
+  <button class="copyBtn" id="copyTokenBtn" type="button">Salin Alamat Token</button>
+  <p>Alamat kontrak klaim:</p>
+  <p class="addr" id="claimAddr"></p>
+  <button class="copyBtn" id="copyClaimBtn" type="button">Salin Alamat Klaim</button>
+  <p id="checks"></p>
+  <p>Langkah terakhir: <b class="step">kirim kedua alamat ini ke Muse</b> — saya verifikasi kontraknya dan sambungkan klaim ke kryntar.xyz.</p>
+</div>
+
+<div class="card">
+  <h2>DETAIL KOMPILASI (UNTUK VERIFIKASI)</h2>
+  <p>Compiler: solc 0.8.38 &middot; Optimizer: aktif, runs 200 &middot; EVM: shanghai &middot; Source: <span class="addr">contract/KrynToken.sol</span> + <span class="addr">contract/KrynClaim.sol</span> (repo Kryntar-game) &middot; Constructor klaim: 2 argumen = alamat NFT di atas + alamat token yang baru di-deploy.</p>
+</div>
+
+<script>
+const TOKEN_ART = {"abi":[{"inputs":[],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[],"name":"InsufficientAllowance","type":"error"},{"inputs":[],"name":"InsufficientBalance","type":"error"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"owner","type":"address"},{"indexed":true,"internalType":"address","name":"spender","type":"address"},{"indexed":false,"internalType":"uint256","name":"value","type":"uint256"}],"name":"Approval","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"from","type":"address"},{"indexed":true,"internalType":"address","name":"to","type":"address"},{"indexed":false,"internalType":"uint256","name":"value","type":"uint256"}],"name":"Transfer","type":"event"},{"inputs":[],"name":"TOTAL_SUPPLY","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"},{"internalType":"address","name":"","type":"address"}],"name":"allowance","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"spender","type":"address"},{"internalType":"uint256","name":"value","type":"uint256"}],"name":"approve","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"balanceOf","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"decimals","outputs":[{"internalType":"uint8","name":"","type":"uint8"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"name","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"symbol","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"totalSupply","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"value","type":"uint256"}],"name":"transfer","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"from","type":"address"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"value","type":"uint256"}],"name":"transferFrom","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"}],"bytecode":"0x6080604052348015600e575f5ffd5b506ab7d162cb18d773d57800005f81815533808252600160205260408083208490555190927fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef91606091815260200190565b60405180910390a361054d806100755f395ff3fe608060405234801561000f575f5ffd5b506004361061009b575f3560e01c806370a082311161006357806370a082311461013e578063902d55a51461015d57806395d89b411461016f578063a9059cbb14610192578063dd62ed3e146101a5575f5ffd5b806306fdde031461009f578063095ea7b3146100d857806318160ddd146100fb57806323b872dd14610111578063313ce56714610124575b5f5ffd5b6100c26040518060400160405280600481526020016325b93cb760e11b81525081565b6040516100cf91906103c4565b60405180910390f35b6100eb6100e636600461042a565b6101cf565b60405190151581526020016100cf565b6101035f5481565b6040519081526020016100cf565b6100eb61011f366004610452565b61023b565b61012c601281565b60405160ff90911681526020016100cf565b61010361014c36600461048c565b60016020525f908152604090205481565b6101036ab7d162cb18d773d578000081565b6100c26040518060400160405280600481526020016325a92ca760e11b81525081565b6100eb6101a036600461042a565b6102cb565b6101036101b33660046104ac565b600260209081525f928352604080842090915290825290205481565b335f8181526002602090815260408083206001600160a01b038716808552925280832085905551919290917f8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925906102299086815260200190565b60405180910390a35060015b92915050565b6001600160a01b0383165f9081526002602090815260408083203384529091528120548281101561027f576040516313be252b60e01b815260040160405180910390fd5b5f1981146102b55761029183826104f1565b6001600160a01b0386165f9081526002602090815260408083203384529091529020555b6102c08585856102e0565b506001949350505050565b5f6102d73384846102e0565b50600192915050565b6001600160a01b0383165f9081526001602052604090205481111561031857604051631e9acf1760e31b815260040160405180910390fd5b6001600160a01b0383165f908152600160205260408120805483929061033f9084906104f1565b90915550506001600160a01b0382165f908152600160205260408120805483929061036b908490610504565b92505081905550816001600160a01b0316836001600160a01b03167fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef836040516103b791815260200190565b60405180910390a3505050565b602081525f82518060208401525f5b818110156103f057602081860181015160408684010152016103d3565b505f604082850101526040601f19601f83011684010191505092915050565b80356001600160a01b0381168114610425575f5ffd5b919050565b5f5f6040838503121561043b575f5ffd5b6104448361040f565b946020939093013593505050565b5f5f5f60608486031215610464575f5ffd5b61046d8461040f565b925061047b6020850161040f565b929592945050506040919091013590565b5f6020828403121561049c575f5ffd5b6104a58261040f565b9392505050565b5f5f604083850312156104bd575f5ffd5b6104c68361040f565b91506104d46020840161040f565b90509250929050565b634e487b7160e01b5f52601160045260245ffd5b81810381811115610235576102356104dd565b80820180821115610235576102356104dd56fea26469706673582212203c408f3b9c5355582b8f4a89bc2c3d9a4c97ada340bfe907ff86ba26a3df506764736f6c63430008260033"};
+const CLAIM_ART = {"abi":[{"inputs":[{"internalType":"address","name":"_nft","type":"address"},{"internalType":"address","name":"_token","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},{"inputs":[],"name":"AlreadyClaimed","type":"error"},{"inputs":[],"name":"IncorrectFee","type":"error"},{"inputs":[],"name":"InvalidAddress","type":"error"},{"inputs":[],"name":"NotHolder","type":"error"},{"inputs":[],"name":"NotOwner","type":"error"},{"inputs":[],"name":"TransferFailed","type":"error"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"holder","type":"address"},{"indexed":true,"internalType":"uint256","name":"tokenId","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"reward","type":"uint256"}],"name":"Claimed","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"owner","type":"address"},{"indexed":false,"internalType":"uint256","name":"amount","type":"uint256"}],"name":"FeesWithdrawn","type":"event"},{"inputs":[],"name":"CLAIM_FEE","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"REWARD","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"tokenId","type":"uint256"}],"name":"claim","outputs":[],"stateMutability":"payable","type":"function"},{"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"claimed","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"claimedCount","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"nft","outputs":[{"internalType":"contract IERC721Owner","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"owner","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"token","outputs":[{"internalType":"contract IERC20Transfer","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"withdraw","outputs":[],"stateMutability":"nonpayable","type":"function"}],"bytecode":"0x60e060405234801561000f575f5ffd5b5060405161074738038061074783398101604081905261002e9161009f565b6001600160a01b038216158061004b57506001600160a01b038116155b156100695760405163e6c4247b60e01b815260040160405180910390fd5b6001600160a01b039182166080521660a0523360c0526100d0565b80516001600160a01b038116811461009a575f5ffd5b919050565b5f5f604083850312156100b0575f5ffd5b6100b983610084565b91506100c760208401610084565b90509250929050565b60805160a05160c05161062b61011c5f395f81816101120152818161043701528181610486015261050801525f81816101dc015261035901525f818160c20152610244015261062b5ff3fe608060405260043610610084575f3560e01c8063c08fa1a411610057578063c08fa1a414610134578063cab34c0814610157578063dbe7e3bd14610174578063e41e4fc6146101b2578063fc0c546a146101cb575f5ffd5b8063379607f5146100885780633ccfd60b1461009d57806347ccca02146100b15780638da5cb5b14610101575b5f5ffd5b61009b61009636600461056d565b6101fe565b005b3480156100a8575f5ffd5b5061009b61042c565b3480156100bc575f5ffd5b506100e47f000000000000000000000000000000000000000000000000000000000000000081565b6040516001600160a01b0390911681526020015b60405180910390f35b34801561010c575f5ffd5b506100e47f000000000000000000000000000000000000000000000000000000000000000081565b34801561013f575f5ffd5b5061014960015481565b6040519081526020016100f8565b348015610162575f5ffd5b5061014969054b40b1f852bda0000081565b34801561017f575f5ffd5b506101a261018e36600461056d565b5f6020819052908152604090205460ff1681565b60405190151581526020016100f8565b3480156101bd575f5ffd5b50610149655af3107a400081565b3480156101d6575f5ffd5b506100e47f000000000000000000000000000000000000000000000000000000000000000081565b655af3107a400034146102245760405163cd3cb2bb60e01b815260040160405180910390fd5b6040516331a9108f60e11b81526004810182905233906001600160a01b037f00000000000000000000000000000000000000000000000000000000000000001690636352211e90602401602060405180830381865afa158015610289573d5f5f3e3d5ffd5b505050506040513d601f19601f820116820180604052508101906102ad9190610584565b6001600160a01b0316146102d457604051633b11fda960e11b815260040160405180910390fd5b5f8181526020819052604090205460ff161561030357604051630c8d9eab60e31b815260040160405180910390fd5b5f818152602081905260408120805460ff1916600190811790915580549091829161032f9083906105b1565b909155505060405163a9059cbb60e01b815233600482015269054b40b1f852bda0000060248201527f00000000000000000000000000000000000000000000000000000000000000006001600160a01b03169063a9059cbb906044016020604051808303815f875af11580156103a7573d5f5f3e3d5ffd5b505050506040513d601f19601f820116820180604052508101906103cb91906105d6565b6103e8576040516312171d8360e31b815260040160405180910390fd5b60405169054b40b1f852bda000008152819033907f987d620f307ff6b94d58743cb7a7509f24071586a77759b77c2d4e29f75a2f9a9060200160405180910390a350565b336001600160a01b037f00000000000000000000000000000000000000000000000000000000000000001614610475576040516330cd747160e01b815260040160405180910390fd5b60405147905f906001600160a01b037f0000000000000000000000000000000000000000000000000000000000000000169083908381818185875af1925050503d805f81146104df576040519150601f19603f3d011682016040523d82523d5f602084013e6104e4565b606091505b5050905080610506576040516312171d8360e31b815260040160405180910390fd5b7f00000000000000000000000000000000000000000000000000000000000000006001600160a01b03167fc0819c13be868895eb93e40eaceb96de976442fa1d404e5c55f14bb65a8c489a8360405161056191815260200190565b60405180910390a25050565b5f6020828403121561057d575f5ffd5b5035919050565b5f60208284031215610594575f5ffd5b81516001600160a01b03811681146105aa575f5ffd5b9392505050565b808201808211156105d057634e487b7160e01b5f52601160045260245ffd5b92915050565b5f602082840312156105e6575f5ffd5b815180151581146105aa575f5ffdfea26469706673582212206b39b4ec5d52267045ed9c69f865c2c3d548b3047e81ed5c054192e9144d753e64736f6c63430008260033"};
+const SEL = {"name":"0x06fdde03","symbol":"0x95d89b41","totalSupply":"0x18160ddd","balanceOf":"0x70a08231","transfer":"0xa9059cbb","nft":"0x47ccca02","token":"0xfc0c546a","REWARD":"0xcab34c08","CLAIM_FEE":"0xe41e4fc6","claimedCount":"0xc08fa1a4"};
+const NFT = "0xB77D3495d3ed4427dA78c9D0f7Cb76C21c23D9fe";
+const CHAIN_ID = "0x38";
+const FUND = 55550000n * (10n ** 18n);
+const SUPPLY = 222222222n * (10n ** 18n);
+const REWARD = 25000n * (10n ** 18n);
+const FEE = 100000000000000n;
+const statusEl = document.getElementById("status");
+const walletLine = document.getElementById("walletLine");
+const deployBtn = document.getElementById("deployBtn");
+let account = null;
+
+function log(msg, cls) {
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  line.textContent = msg;
+  statusEl.appendChild(line);
+}
+function setStatus(msg) { statusEl.textContent = msg; }
+function eth() {
+  if (!window.ethereum) throw new Error("Wallet tidak ditemukan. Buka halaman ini di browser dalam aplikasi wallet (Trust Wallet / MetaMask / OKX).");
+  return window.ethereum;
+}
+async function ensureChain() {
+  const id = await eth().request({ method: "eth_chainId" });
+  if (id === CHAIN_ID) return;
+  try {
+    await eth().request({ method: "wallet_switchEthereumChain", params: [{ chainId: CHAIN_ID }] });
+  } catch (e) {
+    if (e && e.code === 4902) {
+      await eth().request({ method: "wallet_addEthereumChain", params: [{ chainId: CHAIN_ID, chainName: "BNB Chain", nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 }, rpcUrls: ["https://bsc-dataseed.binance.org"], blockExplorerUrls: ["https://bscscan.com"] }] });
+    } else throw e;
+  }
+}
+document.getElementById("connectBtn").addEventListener("click", async () => {
+  try {
+    setStatus("Menghubungkan wallet\u2026");
+    const accounts = await eth().request({ method: "eth_requestAccounts" });
+    account = accounts[0];
+    await ensureChain();
+    walletLine.innerHTML = "Connect: <span class='addr'>" + account + "</span> (BNB Chain)";
+    deployBtn.disabled = false;
+    setStatus("Wallet connect. Siap deploy.");
+  } catch (e) {
+    setStatus("Gagal connect: " + (e && e.message ? e.message : e));
+  }
+});
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+async function waitReceipt(hash) {
+  for (let i = 0; i < 40; i++) {
+    const r = await eth().request({ method: "eth_getTransactionReceipt", params: [hash] });
+    if (r) return r;
+    await sleep(3000);
+  }
+  throw new Error("Receipt tidak ketemu setelah 2 menit. Cek hash di BscScan.");
+}
+async function ethCall(to, data) {
+  return await eth().request({ method: "eth_call", params: [{ from: account, to: to, data: data }, "latest"] });
+}
+function pad32(hex) { return hex.replace(/^0x/, "").toLowerCase().padStart(64, "0"); }
+function decodeString(hex) {
+  const raw = hex.slice(2);
+  const len = parseInt(raw.slice(64, 128), 16);
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = parseInt(raw.slice(128 + i * 2, 130 + i * 2), 16);
+  return new TextDecoder().decode(bytes);
+}
+function setupCopy(btnId, getText) {
+  document.getElementById(btnId).addEventListener("click", async (ev) => {
+    try { await navigator.clipboard.writeText(getText()); ev.target.textContent = "Tersalin!"; }
+    catch (e) { ev.target.textContent = "Gagal salin — salin manual dari atas."; }
+  });
+}
+deployBtn.addEventListener("click", async () => {
+  try {
+    if (!account) throw new Error("Connect wallet dulu.");
+    deployBtn.disabled = true;
+    setStatus("");
+    // TX 1: deploy token
+    log("Transaksi 1/3: deploy token $KRYN\u2026 konfirmasi di wallet.");
+    const hash1 = await eth().request({ method: "eth_sendTransaction", params: [{ from: account, data: TOKEN_ART.bytecode, value: "0x0" }] });
+    log("TX 1 terkirim: " + hash1, "warn");
+    const rc1 = await waitReceipt(hash1);
+    if (!rc1.contractAddress) throw new Error("Receipt TX 1 tidak berisi alamat kontrak.");
+    const tokenAddr = rc1.contractAddress;
+    log("Token ter-deploy di: " + tokenAddr, "ok");
+    // TX 2: deploy claim (nft, token)
+    log("Transaksi 2/3: deploy kontrak klaim\u2026 konfirmasi di wallet.");
+    const claimData = CLAIM_ART.bytecode + pad32(NFT) + pad32(tokenAddr);
+    const hash2 = await eth().request({ method: "eth_sendTransaction", params: [{ from: account, data: claimData, value: "0x0" }] });
+    log("TX 2 terkirim: " + hash2, "warn");
+    const rc2 = await waitReceipt(hash2);
+    if (!rc2.contractAddress) throw new Error("Receipt TX 2 tidak berisi alamat kontrak.");
+    const claimAddr = rc2.contractAddress;
+    log("Klaim ter-deploy di: " + claimAddr, "ok");
+    // TX 3: fund claim with 55,550,000 KRYN
+    log("Transaksi 3/3: isi kontrak klaim dengan 55.550.000 $KRYN\u2026 konfirmasi di wallet.");
+    const fundData = SEL.transfer + pad32(claimAddr) + FUND.toString(16).padStart(64, "0");
+    const hash3 = await eth().request({ method: "eth_sendTransaction", params: [{ from: account, to: tokenAddr, data: fundData, value: "0x0" }] });
+    log("TX 3 terkirim: " + hash3, "warn");
+    await waitReceipt(hash3);
+    log("Kontrak klaim terisi.", "ok");
+    // checks
+    log("Memeriksa kontrak\u2026");
+    const name = decodeString(await ethCall(tokenAddr, SEL.name));
+    const symbol = decodeString(await ethCall(tokenAddr, SEL.symbol));
+    const supply = BigInt(await ethCall(tokenAddr, SEL.totalSupply));
+    const claimBal = BigInt(await ethCall(tokenAddr, SEL.balanceOf + pad32(claimAddr)));
+    const nftGot = "0x" + (await ethCall(claimAddr, SEL.nft)).slice(-40).toLowerCase();
+    const tokenGot = "0x" + (await ethCall(claimAddr, SEL.token)).slice(-40).toLowerCase();
+    const reward = BigInt(await ethCall(claimAddr, SEL.REWARD));
+    const fee = BigInt(await ethCall(claimAddr, SEL.CLAIM_FEE));
+    const cc = BigInt(await ethCall(claimAddr, SEL.claimedCount));
+    const row = (label, val, good) => label + " " + val + (good ? " <span class='ok'>COCOK</span>" : " <span class='err'>TIDAK COCOK</span>") + "<br>";
+    document.getElementById("checks").innerHTML =
+      row("name():", name, name === "Kryn") +
+      row("symbol():", symbol, symbol === "KRYN") +
+      row("totalSupply():", "222.222.222", supply === SUPPLY) +
+      row("saldo klaim:", "55.550.000 $KRYN", claimBal === FUND) +
+      row("claim.nft():", nftGot, nftGot === NFT.toLowerCase()) +
+      row("claim.token():", tokenGot, tokenGot === tokenAddr.toLowerCase()) +
+      row("REWARD:", "25.000 $KRYN", reward === REWARD) +
+      row("CLAIM_FEE:", "0,0001 BNB", fee === FEE) +
+      row("claimedCount():", "0", cc === 0n) +
+      "TX: <a target='_blank' rel='noreferrer' href='https://bscscan.com/tx/" + hash1 + "'>1</a> <a target='_blank' rel='noreferrer' href='https://bscscan.com/tx/" + hash2 + "'>2</a> <a target='_blank' rel='noreferrer' href='https://bscscan.com/tx/" + hash3 + "'>3</a>";
+    document.getElementById("tokenAddr").textContent = tokenAddr;
+    document.getElementById("claimAddr").textContent = claimAddr;
+    document.getElementById("resultCard").style.display = "block";
+    setupCopy("copyTokenBtn", () => tokenAddr);
+    setupCopy("copyClaimBtn", () => claimAddr);
+    log("Selesai. Kirim kedua alamat ke Muse.", "ok");
+  } catch (e) {
+    log("Gagal: " + (e && e.message ? e.message : e), "err");
+    deployBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
