@@ -841,6 +841,43 @@ async function fetchClaimInfo(): Promise<ClaimInfo> {
   };
 }
 
+/* ------------------------- LP bootstrap tracker ------------------------ */
+
+/** $KRYN liquidity is bootstrapped from fees, with no new capital: the
+ *  BNB sitting in the three contracts is withdrawn by the owner and
+ *  paired with 10,000,000 $KRYN on PancakeSwap once it reaches 0.2 BNB,
+ *  and the LP tokens are burned. */
+const LP_BOOTSTRAP_TARGET_WEI = 200_000_000_000_000_000n; // 0.2 BNB
+const LP_BOOTSTRAP_PAIR_KRYN = "10,000,000";
+
+type BootstrapInfo = {
+  /** BNB sitting in the NFT contract (mint fees), in wei. */
+  mintFees: bigint;
+  /** BNB sitting in the claim contract (claim fees), in wei. */
+  claimFees: bigint;
+  /** BNB sitting in the scores contract (score fees), in wei. */
+  scoreFees: bigint;
+  /** Combined total, in wei. */
+  total: bigint;
+  updatedAt: string;
+};
+
+/** Read the live fee balances of the three contracts. */
+async function fetchBootstrapInfo(): Promise<BootstrapInfo> {
+  const [mintFees, claimFees, scoreFees] = await Promise.all([
+    ethGetBalance(CONTRACT_ADDRESS),
+    ethGetBalance(KRYN_CLAIM_ADDRESS),
+    ethGetBalance(SCOREBOARD_ADDRESS),
+  ]);
+  return {
+    mintFees,
+    claimFees,
+    scoreFees,
+    total: mintFees + claimFees + scoreFees,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 type OwnedDiver = { id: number; legendary: boolean; claimed: boolean };
 
 /** Find every Diver the wallet holds, with its claim state. Mirrors the
@@ -2360,7 +2397,106 @@ function ClaimSection() {
           />
         </div>
       </div>
+      <LpBootstrapCard />
     </section>
+  );
+}
+
+/** Live tracker for the fee-funded $KRYN liquidity pool: the combined
+ *  BNB balance of the three contracts against the 0.2 BNB pairing
+ *  target. Every number is read from the chain; a failed read keeps
+ *  the last-known numbers and says so, never fakes them. */
+function LpBootstrapCard() {
+  const info = useQuery({
+    queryKey: ["lp-bootstrap"],
+    queryFn: fetchBootstrapInfo,
+    refetchInterval: 60_000,
+  });
+
+  const data = info.data;
+  const pct = data
+    ? Math.min(100, Number((data.total * 10_000n) / LP_BOOTSTRAP_TARGET_WEI) / 100)
+    : 0;
+  const reached = data ? data.total >= LP_BOOTSTRAP_TARGET_WEI : false;
+
+  return (
+    <div
+      id="lp-bootstrap"
+      className="chunk mt-6 scroll-mt-24 p-5 sm:p-6"
+      style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="pixel-h text-sm">LP BOOTSTRAP</h3>
+        <button
+          type="button"
+          onClick={() => void info.refetch()}
+          disabled={info.isFetching}
+          className="chunk-sm bg-transparent px-4 py-2 font-mono text-xs font-bold uppercase tracking-[0.15em] text-[var(--text)] disabled:opacity-40"
+          style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+        >
+          {info.isFetching ? "Refreshing…" : "Refresh"}
+        </button>
+      </div>
+      <p className="mt-3 text-sm leading-relaxed text-[var(--dim)]">
+        Every fee — mint, claim, and score — builds the $KRYN liquidity pool.
+        When this hits 0.2 BNB, the fees are withdrawn and paired with{" "}
+        {LP_BOOTSTRAP_PAIR_KRYN} $KRYN on PancakeSwap. LP tokens will be burned.
+      </p>
+
+      {info.isError && (
+        <p className="mt-4 font-mono text-xs text-[#FF8A3D]" role="alert">
+          The contract balances could not be read
+          {data ? " — showing the last numbers read" : ""}. Press Refresh to try
+          again.
+        </p>
+      )}
+
+      {data ? (
+        <>
+          <p className="mt-4 font-mono text-sm font-bold">
+            {formatBnb(data.total)} / {formatBnb(LP_BOOTSTRAP_TARGET_WEI)} BNB
+            <span className="ml-3 text-[#FF8A3D]">{pct.toFixed(1)}%</span>
+          </p>
+          <span className="mt-2 block h-2 bg-[#262019]">
+            <span className="block h-full bg-[#FF8A3D]" style={{ width: `${pct}%` }} />
+          </span>
+          <ul className="mt-4 space-y-1 font-mono text-xs leading-relaxed text-[var(--dim)]">
+            <li className="flex justify-between gap-4">
+              <span>Mint fees</span>
+              <span className="font-bold text-[var(--text)]">
+                {formatBnb(data.mintFees)} BNB
+              </span>
+            </li>
+            <li className="flex justify-between gap-4">
+              <span>Claim fees</span>
+              <span className="font-bold text-[var(--text)]">
+                {formatBnb(data.claimFees)} BNB
+              </span>
+            </li>
+            <li className="flex justify-between gap-4">
+              <span>Score fees</span>
+              <span className="font-bold text-[var(--text)]">
+                {formatBnb(data.scoreFees)} BNB
+              </span>
+            </li>
+          </ul>
+          <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--dim)]">
+            Updated {data.updatedAt.slice(11, 19)} UTC
+          </p>
+          {reached && (
+            <p className="mt-3 font-mono text-xs font-bold text-[#9BE08A]" role="status">
+              Target reached — the pairing is ready to go.
+            </p>
+          )}
+        </>
+      ) : (
+        !info.isError && (
+          <p className="mt-4 font-mono text-xs text-[var(--dim)]" role="status">
+            Reading the contract balances…
+          </p>
+        )
+      )}
+    </div>
   );
 }
 
@@ -3491,6 +3627,13 @@ export function App() {
             intro="The Kryntar NFT mint runs on BNB Chain with three lanes side by side from the first block. No lane is ever locked behind another — and only one lane gives you a Legendary."
           />
           <MintSection />
+          <p className="mt-6 text-sm leading-relaxed text-[var(--dim)]">
+            Mint fees build the $KRYN liquidity pool — track the{" "}
+            <a href="#lp-bootstrap" className="font-bold text-[#FF8A3D] underline">
+              LP Bootstrap
+            </a>
+            .
+          </p>
           <h3 id="agents" className="pixel-h mt-10 scroll-mt-24 text-sm sm:text-base">AGENTS</h3>
           <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[var(--dim)]">
             Agents welcome — mint or claim with a short prompt. Copy one, paste
