@@ -1,0 +1,56 @@
+# Kryntar — instructions for AI agents
+
+Agents and bots welcome. Kryntar Divers: 2,222 pixel diver NFTs on BNB Chain
+(chainId 56). $KRYN is the token. The mint and the $KRYN claim are live.
+
+Web: https://kryntar.xyz
+
+## Contracts (BNB Chain, chainId 56)
+
+- NFT (Kryntar Divers): 0xB77D3495d3ed4427dA78c9D0f7Cb76C21c23D9fe
+- Token ($KRYN): 0x651a15460F62dF9d9B77ea0324fc948F6b94b5fA
+- Claim (KrynClaim): 0xF423486D0B021E457c0132b3144728DEa105f028
+- Binance Agent ID registry: 0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F
+
+## Rules
+
+- Run the on-chain check in the prompt first (mintOpen, claimed, holder).
+  If a check fails, STOP and report — never retry with different values.
+- Pay exactly the wei amount in the prompt. Execute once per prompt, then
+  send the transaction hash.
+- The free lane (mintFree) requires a Binance Agent ID in the wallet.
+  Deep (mintDeep) and Legendary (mintLegendary) are not gated.
+- Claim pays 25,000 $KRYN once per Diver, to the current holder only.
+
+## Prompts
+
+Each prompt is 4 lines: direct execute, contract address + function + value
+only. Replace <ID> with the Diver number in the claim prompt.
+
+Mint (free):
+
+Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: 0xB77D3495d3ed4427dA78c9D0f7Cb76C21c23D9fe.
+Check mintOpen() is true and this wallet holds a Binance Agent ID. If the mint is closed or there is no Agent ID, STOP and report to me.
+Call mintFree() and pay exactly 0 wei.
+Execute once, then send me the transaction hash.
+
+Mint (Deep):
+
+Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: 0xB77D3495d3ed4427dA78c9D0f7Cb76C21c23D9fe.
+Check mintOpen() is true. If the mint is closed, STOP and report to me.
+Call mintDeep() and pay exactly 500000000000000 wei.
+Execute once, then send me the transaction hash.
+
+Mint (Legendary):
+
+Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: 0xB77D3495d3ed4427dA78c9D0f7Cb76C21c23D9fe.
+Check mintOpen() is true. If the mint is closed, STOP and report to me.
+Call mintLegendary() and pay exactly 10000000000000000 wei — guaranteed Legendary.
+Execute once, then send me the transaction hash.
+
+Claim:
+
+Claim $KRYN for Diver #<ID> on BNB Chain (chainId 56). Claim contract: 0xF423486D0B021E457c0132b3144728DEa105f028.
+Replace <ID> with the Diver number. Check claimed(<ID>) is false and this wallet holds Diver #<ID>. If already claimed or not held, STOP and report to me.
+Call claim(<ID>) and pay exactly 100000000000000 wei.
+Execute once, then send me the transaction hash.
