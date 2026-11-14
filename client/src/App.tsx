@@ -9,10 +9,18 @@ import { SafeAreaTopScrim } from "@hatch/space-sdk/client";
 import { api, type ApiResponse } from "./api";
 import {
   DeepDive,
+  type GemKind,
   type PlayAccess,
   type RunResult,
   type StartVerdict,
 } from "./game";
+import {
+  loadProgress,
+  MISSIONS,
+  missionProgress,
+  recordRun,
+  type ProgressSnapshot,
+} from "./progress";
 
 import heroImg from "./assets/media-generation-kryntar-hero-gem-0-6c686306-0a8f-4e15-8016-f589684203cf.webp";
 import paleImg from "./assets/media-generation-kryntar-gem-pale-0-58facf25-3156-49c3-b7fd-750c502494e8.webp";
@@ -222,6 +230,25 @@ const SELECTORS = {
   legendaryIdAt: "0x351e92d2",
   ownerOf: "0x6352211e",
   hasAgentId: "0x4eab3ef2",
+};
+
+/** Kryntar Scores — the on-chain Deep Dive leaderboard (holders only).
+ *  Empty until the contract is deployed; set to the deployed address and
+ *  the scores board + on-chain submit below switch on. Never put a fake
+ *  address here. */
+const SCOREBOARD_ADDRESS = "";
+
+/** Function selectors of the KryntarScores contract (see
+ *  contract/KryntarScores.sol). balanceOf is the NFT contract's. */
+const SCORE_SELECTORS = {
+  submitScore: "0x036e2294",
+  playerCount: "0x302bcc57",
+  playerAt: "0x8f828470",
+  entryOf: "0x58bb388a",
+  isPlayer: "0x09c95e10",
+  nft: "0x47ccca02",
+  submitFee: "0x3bb45586",
+  balanceOf: "0x70a08231",
 };
 
 const STANDARD_POOL_SIZE = 2111;
@@ -511,6 +538,45 @@ async function ethCallTo(to: string, data: string): Promise<string> {
   );
 }
 
+/** Read an address's BNB balance, first responding RPC wins. */
+async function ethGetBalance(address: string): Promise<bigint> {
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "eth_getBalance",
+    params: [address, "latest"],
+  });
+  const hex = await firstSuccess(
+    RPC_URLS.map(async (url) => {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+      if (!res.ok) throw new Error(`rpc http ${res.status}`);
+      const json = (await res.json()) as { result?: unknown };
+      if (typeof json.result !== "string") throw new Error("rpc error");
+      return json.result;
+    }),
+  );
+  try {
+    return BigInt(hex);
+  } catch {
+    return 0n;
+  }
+}
+
+/** Format wei as BNB with up to 4 decimals (0.0001, 0.0123, 1.5). */
+function formatBnb(wei: bigint): string {
+  const whole = wei / 10n ** 18n;
+  const frac = (wei % 10n ** 18n)
+    .toString()
+    .padStart(18, "0")
+    .slice(0, 4)
+    .replace(/0+$/, "");
+  return frac ? `${whole}.${frac}` : `${whole}`;
+}
+
 /** Run calls through Multicall3 in parallel chunks, in call order. */
 async function multicall(calls: { to: string; data: string }[]): Promise<MulticallResult[]> {
   if (calls.length === 0) return [];
@@ -598,6 +664,127 @@ async function fetchBoardData(): Promise<BoardData> {
 
 /* ================= board data (on-chain) — end ================= */
 
+/* ------------------------ scores board (on-chain) ------------------------ */
+
+type ScoreEntry = {
+  wallet: string;
+  name: string;
+  score: number;
+  depth: number;
+  gems: number;
+  updatedAt: number;
+};
+
+type ScoresData = {
+  entries: ScoreEntry[];
+  totalPlayers: number;
+  /** Submit fees accumulated in the scores contract (wei). */
+  collectedWei: bigint;
+  updatedAt: string;
+};
+
+/** Decode KryntarScores.entryOf's (string, uint256, uint256, uint256,
+ *  uint256) return data. */
+function decodeScoreEntry(hex: string): {
+  name: string;
+  score: number;
+  depth: number;
+  gems: number;
+  updatedAt: number;
+} {
+  const empty = { name: "", score: 0, depth: 0, gems: 0, updatedAt: 0 };
+  try {
+    const h = hex.startsWith("0x") ? hex.slice(2) : hex;
+    if (h.length < 320) return empty;
+    const strOff = Number(readU256(h, 0));
+    const strLen = Number(readU256(h, strOff));
+    const strHex = h.slice((strOff + 32) * 2, (strOff + 32 + strLen) * 2);
+    const bytes = new Uint8Array(strHex.length / 2);
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = parseInt(strHex.slice(i * 2, i * 2 + 2), 16);
+    }
+    let name = "";
+    try {
+      name = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      name = "";
+    }
+    return {
+      name,
+      score: Number(readU256(h, 32)),
+      depth: Number(readU256(h, 64)),
+      gems: Number(readU256(h, 96)),
+      updatedAt: Number(readU256(h, 128)),
+    };
+  } catch {
+    return empty;
+  }
+}
+
+/** Read the full scores ranking from the KryntarScores contract. Two
+ *  batched passes: player wallets in submission order, then every
+ *  player's best entry. */
+async function fetchScoresData(): Promise<ScoresData> {
+  if (!SCOREBOARD_ADDRESS) throw new Error("scoreboard not deployed");
+  const [countHex, collectedWei] = await Promise.all([
+    ethCallTo(SCOREBOARD_ADDRESS, SCORE_SELECTORS.playerCount),
+    ethGetBalance(SCOREBOARD_ADDRESS),
+  ]);
+  const count = decodeUint(countHex);
+  const playerResults = await multicall(
+    Array.from({ length: count }, (_, i) => ({
+      to: SCOREBOARD_ADDRESS,
+      data: encodeUintCall(SCORE_SELECTORS.playerAt, i),
+    })),
+  );
+  const wallets = playerResults.map((data) => ("0x" + data.slice(-40)).toLowerCase());
+  const entryResults = await multicall(
+    wallets.map((w) => ({
+      to: SCOREBOARD_ADDRESS,
+      data: encodeAddressArg(SCORE_SELECTORS.entryOf, w),
+    })),
+  );
+  const entries: ScoreEntry[] = wallets.map((wallet, i) => ({
+    wallet,
+    ...decodeScoreEntry(entryResults[i] ?? "0x"),
+  }));
+  entries.sort(
+    (a, b) =>
+      b.score - a.score ||
+      a.updatedAt - b.updatedAt ||
+      (a.wallet < b.wallet ? -1 : a.wallet > b.wallet ? 1 : 0),
+  );
+  return {
+    entries,
+    totalPlayers: count,
+    collectedWei,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/** ABI-encode submitScore(string,uint256,uint256,uint256). The string
+ *  argument is dynamic: the head carries its offset (128), the tail
+ *  carries length + padded bytes. */
+function encodeSubmitScore(
+  name: string,
+  score: number,
+  depth: number,
+  gems: number,
+): string {
+  const nameBytes = new TextEncoder().encode(name);
+  const dataHex = Array.from(nameBytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  const paddedLen = Math.ceil(nameBytes.length / 32) * 32;
+  return (
+    SCORE_SELECTORS.submitScore +
+    padHex(128n, 32) +
+    padHex(BigInt(score), 32) +
+    padHex(BigInt(depth), 32) +
+    padHex(BigInt(gems), 32) +
+    padHex(BigInt(nameBytes.length), 32) +
+    dataHex.padEnd(paddedLen * 2, "0")
+  );
+}
+
 /* ---------------------------- agent prompts ------------------------------ */
 
 const AGENT_PROMPT_FREE = `Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: ${CONTRACT_ADDRESS}. Call mintFree() and pay exactly 0 BNB (0 wei). You must hold a Binance Agent ID in this wallet (free lane is Agent-ID gated). If mintOpen() returns false, STOP and report to me. Execute once, then send me the transaction hash.`;
@@ -619,7 +806,7 @@ const FAQS = [
   },
   {
     q: "How do I play Deep Dive?",
-    a: "Set your diver name and holder tier in the access panel, then press START DIVE. You get 60 seconds and 3 oxygen. Drag on the arena or use the arrow keys / A and D to move. Grab the gems rising past you and the air bubbles that refill oxygen; dodge the falling rocks and the jellyfish. The deeper you go, the darker the water, the faster oxygen drains — and the more every gem is worth.",
+    a: "Press START DIVE. You get 60 seconds and 3 oxygen. Drag on the arena or use the arrow keys / A and D to move; SHIFT or the DASH button gives you a quick burst. Grab the gems rising past you and the air bubbles that refill oxygen; dodge the falling rocks and the jellyfish. The deeper you go, the darker the water, the faster oxygen drains — and the more every gem is worth. Mid-dive events — GEM RUSH, JELLY SWARM, BUBBLE SURGE — change the odds for a few seconds. On this page the game runs in local mode: unlimited practice dives, with gems, scores and missions saved on your device.",
   },
   {
     q: "How many times can I play?",
@@ -630,8 +817,12 @@ const FAQS = [
     a: "A board that runs on-chain, not on a server. It reads every Divers NFT straight from BNB Chain and ranks wallets by how many Divers they hold — Legendary held, then earliest mint, break ties. The top 20 are shown, and your own wallet is pinned below if it ranks lower. It refreshes every 60 seconds, and there are no prizes: honor and bragging rights only.",
   },
   {
+    q: "What is the scores board?",
+    a: "A second on-chain board, next to the holders board: player names and best Deep Dive scores, saved on BNB Chain by the players themselves. Only wallets holding a Kryntar Diver can save a score — finish a dive, then save it on-chain from the panel after the game (wallet + the 0.0001 BNB submit fee). Only your best score is kept, and the name you save is the name shown. The fee stays in the scores contract for the owner to withdraw.",
+  },
+  {
     q: "Why can't guests submit scores?",
-    a: "Submitting is a holder perk. Guests can practice once a day to learn the dive, but their scores stay off the board. Free-NFT holders submit every dive; legendary holders submit without limits.",
+    a: "On the server board, submitting is a holder perk: guests can practice once a day to learn the dive, but their scores stay off that board. Free-NFT holders submit every dive; legendary holders submit without limits. The on-chain scores board is different — it checks your wallet, not your tier: if you hold a Kryntar Diver, you can save any dive on-chain from the panel after the game, whatever tier you picked.",
   },
   {
     q: "What are the Kryntar Divers?",
@@ -647,7 +838,7 @@ const FAQS = [
   },
   {
     q: "Do I need a wallet to play?",
-    a: "No. Anyone can dive — guests get one practice play a day with just a name. The wallet field is optional; plays and scores are counted under your name plus wallet when you give one, so use the same pair every time.",
+    a: "No. Anyone can dive — guests get one practice play a day with just a name. The wallet field is optional; plays and scores are counted under your name plus wallet when you give one, so use the same pair every time. Saving a score on-chain is the one thing that needs a wallet — one that holds a Diver.",
   },
   {
     q: "Who can mint for free?",
@@ -707,6 +898,15 @@ function loadWallet(): string {
   return localStorage.getItem("kryntar-wallet") ?? "";
 }
 
+/** Local mode has no server, so plays are unlimited practice runs that
+ *  cannot be submitted anywhere — the access object says exactly that. */
+const LOCAL_ACCESS: PlayAccess = {
+  playsLeft: null,
+  playsLimit: null,
+  canSubmit: false,
+  resetsAt: "",
+};
+
 
 
 function xPostUrl(text: string): string {
@@ -714,6 +914,199 @@ function xPostUrl(text: string): string {
 }
 
 
+
+/* ------------------------- on-chain score submit ------------------------- */
+
+type ChainSubmitStatus =
+  | { status: "idle" }
+  | { status: "busy"; message: string }
+  | { status: "error"; message: string }
+  | { status: "sent"; txHash: string };
+
+function friendlyScoreError(err: unknown): string {
+  const msg = errorMessage(err).toLowerCase();
+  if (
+    errorCode(err) === 4001 ||
+    msg.includes("user rejected") ||
+    msg.includes("user denied")
+  ) {
+    return "You rejected the transaction in your wallet — nothing was saved.";
+  }
+  if (msg.includes("hold a kryntar diver")) {
+    return "This wallet holds no Kryntar Diver — on-chain scores are holders only.";
+  }
+  if (msg.includes("exact fee")) {
+    return "The save costs exactly 0.0001 BNB — the contract rejected the amount.";
+  }
+  if (msg.includes("name 1-24")) {
+    return "Diver name must be 1–24 bytes.";
+  }
+  if (msg.includes("insufficient funds")) {
+    return "Not enough BNB in this wallet to cover gas.";
+  }
+  return "The transaction failed — nothing was saved. Check your wallet and try again.";
+}
+
+/** Save this dive's score on the KryntarScores contract. Only rendered
+ *  when the scoreboard is deployed. The contract keeps each wallet's
+ *  best score; the gate is the real holder check, not the access-panel
+ *  tier, so guests holding a Diver can submit too. */
+function OnChainSubmit({ run, name }: { run: RunResult; name: string }) {
+  const [st, setSt] = useState<ChainSubmitStatus>({ status: "idle" });
+
+  const submit = async () => {
+    const trimmed = name.trim();
+    const byteLen = new TextEncoder().encode(trimmed).length;
+    if (!trimmed) {
+      setSt({
+        status: "error",
+        message: "Type your diver name first — it is saved on-chain with your score.",
+      });
+      return;
+    }
+    if (byteLen > 24) {
+      setSt({
+        status: "error",
+        message: "Diver name is too long for the contract (max 24 bytes).",
+      });
+      return;
+    }
+    if (run.score <= 0) {
+      setSt({ status: "error", message: "A score of 0 cannot be saved." });
+      return;
+    }
+    const eth = getEthereum();
+    if (!eth) {
+      setSt({
+        status: "error",
+        message: "No wallet found. Open this page in a wallet app browser to save on-chain.",
+      });
+      return;
+    }
+    try {
+      setSt({ status: "busy", message: "Connecting wallet…" });
+      const accounts = (await eth.request({
+        method: "eth_requestAccounts",
+      })) as string[];
+      const account = accounts[0];
+      if (!account) throw new Error("No account returned by the wallet.");
+      const chainId = (await eth.request({ method: "eth_chainId" })) as string;
+      if (chainId !== "0x38") {
+        try {
+          await eth.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: "0x38" }],
+          });
+        } catch (switchErr) {
+          if (errorCode(switchErr) === 4902) {
+            await eth.request({
+              method: "wallet_addEthereumChain",
+              params: [
+                {
+                  chainId: "0x38",
+                  chainName: "BNB Chain",
+                  nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 },
+                  rpcUrls: ["https://bsc-dataseed.binance.org"],
+                  blockExplorerUrls: ["https://bscscan.com"],
+                },
+              ],
+            });
+          } else {
+            throw switchErr;
+          }
+        }
+      }
+      setSt({ status: "busy", message: "Checking holder status…" });
+      const balHex = await ethCallTo(
+        CONTRACT_ADDRESS,
+        encodeAddressArg(SCORE_SELECTORS.balanceOf, account),
+      );
+      if (decodeUint(balHex) <= 0) {
+        setSt({
+          status: "error",
+          message:
+            "This wallet holds no Kryntar Diver — on-chain scores are holders only. Mint first, then submit.",
+        });
+        return;
+      }
+      setSt({ status: "busy", message: "Reading the submit fee…" });
+      let feeHex: string;
+      try {
+        const feeRaw = await ethCallTo(
+          SCOREBOARD_ADDRESS,
+          SCORE_SELECTORS.submitFee,
+        );
+        feeHex = "0x" + BigInt(feeRaw).toString(16);
+      } catch {
+        setSt({
+          status: "error",
+          message:
+            "Could not read the submit fee from the contract. Try again in a moment.",
+        });
+        return;
+      }
+      setSt({ status: "busy", message: "Confirm in your wallet…" });
+      const data = encodeSubmitScore(trimmed, run.score, run.depth, run.gems);
+      const hash = (await eth.request({
+        method: "eth_sendTransaction",
+        params: [{ from: account, to: SCOREBOARD_ADDRESS, data, value: feeHex }],
+      })) as string;
+      setSt({ status: "sent", txHash: hash });
+    } catch (err) {
+      setSt({ status: "error", message: friendlyScoreError(err) });
+    }
+  };
+
+  return (
+    <div
+      className="chunk-sm mt-6 bg-[#0B0B0C] p-4 sm:p-5"
+      style={{ "--chunk-shadow": "#C97B2D" } as CSSProperties}
+    >
+      <p className="font-mono text-xs font-bold uppercase tracking-[0.2em]">
+        Save score on-chain
+      </p>
+      <p className="mt-2 text-sm leading-relaxed text-[var(--dim)]">
+        Your best score, your diver name, and this dive&apos;s depth and
+        gems — saved forever on BNB Chain, visible to everyone on the
+        scores board below. Only wallets holding a Kryntar Diver can save,
+        and only your best score is kept. Each save costs 0.0001 BNB,
+        kept in the scores contract, plus a little gas.
+      </p>
+      <button
+        type="button"
+        onClick={() => void submit()}
+        disabled={st.status === "busy" || st.status === "sent"}
+        className="chunk-sm mt-4 bg-[#FF8A3D] px-5 py-2.5 font-mono text-xs font-bold uppercase tracking-[0.15em] text-[#070708] disabled:opacity-40"
+        style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+      >
+        {st.status === "busy"
+          ? st.message
+          : st.status === "sent"
+            ? "Saved on-chain ✓"
+            : "Save on-chain"}
+      </button>
+      {st.status === "error" && (
+        <p role="alert" className="mt-3 font-mono text-xs text-[#FF8A3D]">
+          {st.message}
+        </p>
+      )}
+      {st.status === "sent" && (
+        <p className="mt-3 font-mono text-xs text-[var(--dim)]">
+          Transaction sent:{" "}
+          <a
+            className="break-all text-[#FF8A3D] underline"
+            href={`https://bscscan.com/tx/${st.txHash}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {st.txHash}
+          </a>{" "}
+          — the scores board refreshes every 60 seconds.
+        </p>
+      )}
+    </div>
+  );
+}
 
 function SaveDiveForm({
   run,
@@ -723,6 +1116,7 @@ function SaveDiveForm({
   onNameChange,
   onWalletChange,
   onSaved,
+  localMode,
 }: {
   run: RunResult | null;
   name: string;
@@ -731,6 +1125,7 @@ function SaveDiveForm({
   onNameChange: (v: string) => void;
   onWalletChange: (v: string) => void;
   onSaved: (rank: number | null) => void;
+  localMode: boolean;
 }) {
   const [message, setMessage] = useState<string | null>(null);
   const [savedRank, setSavedRank] = useState<number | null>(null);
@@ -747,9 +1142,6 @@ function SaveDiveForm({
     }) => await api.submitScore(args),
     onSuccess: (res) => {
       localStorage.setItem("kryntar-name", name.trim());
-      const prev = Number(localStorage.getItem("kryntar-gems-total") ?? 0);
-      const safePrev = Number.isFinite(prev) ? prev : 0;
-      localStorage.setItem("kryntar-gems-total", String(safePrev + (run?.gems ?? 0)));
       setSavedRank(res.rank);
       setMessage(
         res.rank
@@ -764,29 +1156,65 @@ function SaveDiveForm({
 
   if (!run) return null;
 
+  const onChain = SCOREBOARD_ADDRESS ? (
+    <OnChainSubmit run={run} name={name} />
+  ) : null;
+
+  if (localMode) {
+    return (
+      <>
+        <div
+          className="chunk-sm mt-6 bg-[#0B0B0C] p-4 sm:p-5"
+          style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+          role="status"
+        >
+          <p className="font-mono text-xs font-bold uppercase tracking-[0.2em]">
+            Saved on this device
+          </p>
+          <p className="mt-2 text-sm leading-relaxed text-[var(--dim)]">
+            You scored {run.score} and reached {run.depth} m — {run.gems}{" "}
+            Kryn gems added to your gem bank below. There is no server on
+            this page, so dives are saved on this device only.
+            {SCOREBOARD_ADDRESS
+              ? " Holders can also save this dive on-chain below — it lands on the public scores board."
+              : ""}
+          </p>
+        </div>
+        {onChain}
+      </>
+    );
+  }
+
   if (tier === "guest") {
     return (
-      <div
-        className="chunk-sm mt-6 bg-[#0B0B0C] p-4 sm:p-5"
-        style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
-        role="status"
-      >
-        <p className="font-mono text-xs font-bold uppercase tracking-[0.2em]">
-          Guest dive — practice only
-        </p>
-        <p className="mt-2 text-sm leading-relaxed text-[var(--dim)]">
-          You scored {run.score} and reached {run.depth} m, but guest scores
-          cannot be submitted to the leaderboard. Submitting is for Kryntar
-          NFT holders: free-NFT holders submit every dive, legendary holders
-          dive and submit without limits. If you hold one, pick your tier in
-          the access panel above the game.
-        </p>
-      </div>
+      <>
+        <div
+          className="chunk-sm mt-6 bg-[#0B0B0C] p-4 sm:p-5"
+          style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+          role="status"
+        >
+          <p className="font-mono text-xs font-bold uppercase tracking-[0.2em]">
+            Guest dive — practice only
+          </p>
+          <p className="mt-2 text-sm leading-relaxed text-[var(--dim)]">
+            You scored {run.score} and reached {run.depth} m, but guest
+            scores cannot be submitted to the leaderboard. Submitting is for
+            Kryntar NFT holders: free-NFT holders submit every dive,
+            legendary holders dive and submit without limits. If you hold
+            one, pick your tier in the access panel above the game.
+            {SCOREBOARD_ADDRESS
+              ? " Or save this dive on-chain below — the contract checks your wallet, not the tier you picked."
+              : ""}
+          </p>
+        </div>
+        {onChain}
+      </>
     );
   }
 
   return (
-    <form
+    <>
+      <form
       className="chunk-sm mt-6 bg-[#0B0B0C] p-4 sm:p-5"
       style={{ "--chunk-shadow": "#C97B2D" } as CSSProperties}
       onSubmit={(e) => {
@@ -860,7 +1288,81 @@ function SaveDiveForm({
           {message}
         </p>
       )}
-    </form>
+      </form>
+      {onChain}
+    </>
+  );
+}
+
+/* -------------------------------- missions ------------------------------- */
+
+const BANK_KINDS: { id: GemKind; label: string; color: string }[] = [
+  { id: "pale", label: "Pale Kryn", color: "#D8D2C4" },
+  { id: "cracked", label: "Cracked Kryn", color: "#9B968B" },
+  { id: "ember", label: "Ember Kryn", color: "#FF8A3D" },
+  { id: "heart", label: "Heart Kryn", color: "#FFC46B" },
+];
+
+function MissionsPanel({
+  progress,
+  justCompleted,
+}: {
+  progress: ProgressSnapshot;
+  justCompleted: string[];
+}) {
+  return (
+    <div
+      className="chunk-sm mt-6 bg-[#0B0B0C] p-4 sm:p-5"
+      style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+    >
+      <h3 className="pixel-h text-xs sm:text-sm">MISSIONS</h3>
+      <p className="mt-2 max-w-xl text-sm leading-relaxed text-[var(--dim)]">
+        Finish missions by diving. Progress is saved on this device only.
+      </p>
+      <ul className="mt-4 grid gap-3">
+        {MISSIONS.map((m) => {
+          const done = missionProgress(m, progress) >= m.target;
+          const fresh = justCompleted.includes(m.id);
+          const pct = Math.round(
+            (missionProgress(m, progress) / m.target) * 100,
+          );
+          return (
+            <li
+              key={m.id}
+              className={`border-2 px-3 py-2.5 ${
+                fresh
+                  ? "border-[#FFC46B] bg-[#241A08]"
+                  : done
+                    ? "border-[#3D382E] bg-[#171410]"
+                    : "border-[#3D382E] bg-[var(--surface)]"
+              }`}
+            >
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <span className="font-mono text-xs font-bold tracking-[0.12em]">
+                  {m.title}
+                </span>
+                <span className="font-mono text-[11px] text-[var(--dim)]">
+                  {done ? (
+                    <span className="font-bold text-[#FFC46B]">
+                      {fresh ? "JUST COMPLETED ✓" : "DONE ✓"}
+                    </span>
+                  ) : (
+                    `${missionProgress(m, progress)} / ${m.target}`
+                  )}
+                </span>
+              </div>
+              <span className="mt-1 block text-sm text-[var(--dim)]">{m.desc}</span>
+              <span className="mt-2 block h-2 bg-[#262019]">
+                <span
+                  className="block h-full bg-[#FF8A3D]"
+                  style={{ width: `${pct}%` }}
+                />
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -875,6 +1377,7 @@ function AccessPanel({
   onTierChange,
   access,
   accessLoading,
+  localMode,
 }: {
   name: string;
   wallet: string;
@@ -884,6 +1387,7 @@ function AccessPanel({
   onTierChange: (t: PlayerTier) => void;
   access: AccessData | null;
   accessLoading: boolean;
+  localMode: boolean;
 }) {
   const tiers: { id: PlayerTier; label: string; rule: string }[] = [
     { id: "legendary", label: "LEGENDARY NFT", rule: "Unlimited plays · submit scores" },
@@ -898,9 +1402,11 @@ function AccessPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="pixel-h text-xs sm:text-sm">WHO IS DIVING?</h3>
         <span className="font-mono text-[11px] uppercase tracking-[0.15em] text-[var(--dim)]">
-          {accessLoading
-            ? "Checking plays…"
-            : access
+          {localMode
+            ? "Local mode — unlimited practice"
+            : accessLoading
+              ? "Checking plays…"
+              : access
               ? access.plays_left === null
                 ? "Plays today: unlimited"
                 : `Plays left today: ${access.plays_left}/${access.plays_limit ?? 0}`
@@ -968,11 +1474,9 @@ function AccessPanel({
         })}
       </div>
       <p className="mt-4 font-mono text-[11px] leading-relaxed text-[var(--dim)]">
-        Plays are counted on the server per name + wallet and reset at 00:00
-        UTC. Honest note: holder status is self-declared for now. The
-        Kryntar contract is live on BNB Chain, and on-chain holder
-        verification is being connected — it is not active yet, so nothing
-        is being verified against your wallet today.
+        {localMode
+          ? "Local mode: no server on this page, so plays are unlimited and counted on this device only. Your name and tier above are just your diver identity — nothing is verified against your wallet today."
+          : "Plays are counted on the server per name + wallet and reset at 00:00 UTC. Honest note: holder status is self-declared for now. The Kryntar contract is live on BNB Chain, and on-chain holder verification is being connected — it is not active yet, so nothing is being verified against your wallet today."}
       </p>
     </div>
   );
@@ -1110,6 +1614,154 @@ function LeaderboardSection({ wallet }: { wallet: string }) {
             No Divers held by “{wallet.trim()}” yet — mint in the section
             above to take your place on the board.
           </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------ scores board ----------------------------- */
+
+function ScoreRow({
+  entry,
+  rank,
+  isMine,
+}: {
+  entry: ScoreEntry;
+  rank: number;
+  isMine: boolean;
+}) {
+  return (
+    <li className={isMine ? "bg-[#221C14]" : ""}>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-3 sm:px-4">
+        <span className="w-8 font-mono text-sm font-bold text-[#FFC46B]">
+          #{rank}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-bold">
+            {entry.name || "—"}
+          </span>
+          <a
+            className="font-mono text-xs text-[var(--dim)] underline hover:text-[var(--text)]"
+            href={`https://bscscan.com/address/${entry.wallet}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {shortAddress(entry.wallet)}
+          </a>
+        </span>
+        <span className="text-right">
+          <span className="block font-mono text-base font-bold">
+            {entry.score.toLocaleString("en-US")}
+          </span>
+          <span className="block font-mono text-[11px] text-[var(--dim)]">
+            {entry.depth.toLocaleString("en-US")} m · {entry.gems} gems
+          </span>
+        </span>
+      </div>
+    </li>
+  );
+}
+
+function ScoresSection({ wallet }: { wallet: string }) {
+  const scores = useQuery({
+    queryKey: ["scores-onchain"],
+    queryFn: fetchScoresData,
+    refetchInterval: 60_000,
+    enabled: SCOREBOARD_ADDRESS !== "",
+  });
+  const data = scores.data;
+  const mineWallet = wallet.trim().toLowerCase();
+  const mineRank =
+    data && mineWallet
+      ? data.entries.findIndex((e) => e.wallet === mineWallet) + 1
+      : 0;
+  const mine = mineRank > 0 && data ? (data.entries[mineRank - 1] ?? null) : null;
+  const mineInTop = mineRank > 0 && mineRank <= 20;
+
+  return (
+    <section id="scores" className="scroll-mt-24 pt-20">
+      <SectionHead
+        kicker="Scores board"
+        title="TOP SCORES — ON-CHAIN"
+        intro="Player names and best scores, saved on BNB Chain by the divers themselves — no server, no sign-up. Only wallets holding a Kryntar Diver can save a score, and only each wallet's best is kept. Each save costs 0.0001 BNB, kept in the scores contract. Finish a dive, save it on-chain, and your name climbs. It refreshes every 60 s."
+      />
+      <div
+        className="chunk mt-8 p-2 sm:p-6"
+        style={{ "--chunk-shadow": "#C97B2D" } as CSSProperties}
+      >
+        {!SCOREBOARD_ADDRESS && (
+          <p
+            className="px-2 py-6 text-center font-mono text-sm text-[var(--dim)]"
+            role="status"
+          >
+            The on-chain scores board is not deployed yet. Once it is live,
+            holders will save their names and best scores here — this page
+            will read them straight from BNB Chain.
+          </p>
+        )}
+
+        {SCOREBOARD_ADDRESS && (
+          <>
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 px-2 pt-2 sm:px-0 sm:pt-0">
+              <p className="font-mono text-xs text-[var(--dim)]">
+                {data
+                  ? `${data.totalPlayers} ${data.totalPlayers === 1 ? "player" : "players"} · ${formatBnb(data.collectedWei)} BNB collected · updated ${data.updatedAt.slice(11, 19)} UTC`
+                  : "Loading the scores…"}
+              </p>
+              <button
+                type="button"
+                onClick={() => void scores.refetch()}
+                disabled={scores.isFetching}
+                className="chunk-sm bg-transparent px-4 py-2 font-mono text-xs font-bold uppercase tracking-[0.15em] text-[var(--text)] disabled:opacity-40"
+                style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+              >
+                {scores.isFetching ? "Refreshing…" : "Refresh"}
+              </button>
+            </div>
+
+            {scores.isError && (
+              <p className="px-2 font-mono text-xs text-[#FF8A3D]" role="alert">
+                The scores could not be loaded. Press Refresh to try again.
+              </p>
+            )}
+
+            {data && data.entries.length === 0 && (
+              <p
+                className="px-2 py-6 text-center font-mono text-sm text-[var(--dim)]"
+                role="status"
+              >
+                No scores saved yet. Be the first name on the board — finish
+                a dive and save it on-chain.
+              </p>
+            )}
+
+            {data && data.entries.length > 0 && (
+              <ol className="divide-y divide-[#201E1A] border-2 border-[#201E1A] bg-[#0B0B0C]">
+                {data.entries.slice(0, 20).map((e, i) => (
+                  <ScoreRow key={e.wallet} entry={e} rank={i + 1} isMine={mineRank === i + 1} />
+                ))}
+              </ol>
+            )}
+
+            {mine && !mineInTop && (
+              <div className="mt-4">
+                <p className="mb-2 px-2 font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--dim)]">
+                  Your wallet — outside the top 20
+                </p>
+                <ol className="border-2 border-[#C97B2D] bg-[#0B0B0C]">
+                  <ScoreRow entry={mine} rank={mineRank} isMine />
+                </ol>
+              </div>
+            )}
+
+            {data && !mine && mineWallet && (
+              <p className="mt-4 px-2 font-mono text-xs text-[var(--dim)]">
+                No score saved by “{wallet.trim()}” yet — finish a dive and
+                save it on-chain to take your place on the board.
+              </p>
+            )}
+          </>
         )}
       </div>
     </section>
@@ -1685,10 +2337,13 @@ export function App() {
     const v = Number(localStorage.getItem("kryntar-gems-total") ?? 0);
     return Number.isFinite(v) ? v : 0;
   });
-  const [bestScore] = useState<number>(() => {
+  const [bestScore, setBestScore] = useState<number>(() => {
     const v = Number(localStorage.getItem("kryntar-dive-best") ?? 0);
     return Number.isFinite(v) ? v : 0;
   });
+  const [localMode, setLocalMode] = useState(false);
+  const [progress, setProgress] = useState<ProgressSnapshot>(loadProgress);
+  const [justCompleted, setJustCompleted] = useState<string[]>([]);
   const queryClient = useQueryClient();
 
   const trimmedName = playerName.trim();
@@ -1701,8 +2356,32 @@ export function App() {
   const accessQuery = useQuery({
     queryKey: ["access", trimmedName.toLowerCase(), trimmedWallet.toLowerCase(), playerTier],
     queryFn: () => api.getAccess(accessArgs),
-    enabled: trimmedName.length > 0,
+    enabled: trimmedName.length > 0 && !localMode,
+    retry: 1,
   });
+  useEffect(() => {
+    if (accessQuery.isError) setLocalMode(true);
+  }, [accessQuery.isError]);
+  // Static hosting (GitHub Pages) has no ./actions endpoint: a probe POST
+  // 404s there, while the space server answers. Detect once on mount so
+  // the game is playable even before a diver name is typed.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("./actions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    })
+      .then((r) => {
+        if (!cancelled && r.status === 404) setLocalMode(true);
+      })
+      .catch(() => {
+        if (!cancelled) setLocalMode(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const access: PlayAccess | null = accessQuery.data
     ? {
         playsLeft: accessQuery.data.plays_left,
@@ -1713,17 +2392,24 @@ export function App() {
     : null;
 
   const handleStartRequest = async (): Promise<StartVerdict> => {
-    const res = await api.startPlay(accessArgs);
-    void queryClient.invalidateQueries({ queryKey: ["access"] });
-    return {
-      allowed: res.allowed,
-      access: {
-        playsLeft: res.access.plays_left,
-        playsLimit: res.access.plays_limit,
-        canSubmit: res.access.can_submit,
-        resetsAt: res.access.resets_at,
-      },
-    };
+    try {
+      const res = await api.startPlay(accessArgs);
+      void queryClient.invalidateQueries({ queryKey: ["access"] });
+      return {
+        allowed: res.allowed,
+        access: {
+          playsLeft: res.access.plays_left,
+          playsLimit: res.access.plays_limit,
+          canSubmit: res.access.can_submit,
+          resetsAt: res.access.resets_at,
+        },
+      };
+    } catch {
+      // No server reachable (static hosting): fall back to local mode and
+      // let the dive start — it is saved on the device, not submitted.
+      setLocalMode(true);
+      return { allowed: true, access: LOCAL_ACCESS };
+    }
   };
 
   const changeName = (v: string) => {
@@ -1757,6 +2443,7 @@ export function App() {
           <div className="flex flex-1 flex-wrap items-center justify-end gap-0.5 py-1">
             <a className={navLink} href="#game">Game</a>
             <a className={navLink} href="#board">Board</a>
+            <a className={navLink} href="#scores">Scores</a>
             <a className={navLink} href="#world">World</a>
             <a className={navLink} href="#collection">Gems</a>
             <a className={navLink} href="#divers">Divers</a>
@@ -1787,7 +2474,7 @@ export function App() {
 
           <dl className="chunk mt-8 grid grid-cols-2 gap-px bg-black font-mono lg:grid-cols-4" style={{ "--chunk-shadow": "#C97B2D" } as CSSProperties}>
             {[
-              ["PLAY", "Holders dive more — see access"],
+              ["PLAY", "Unlimited practice dives"],
               ["ONE DIVE", "60 seconds · 3 oxygen"],
               ["GEMS", "4 types · deeper = rarer"],
               ["TOKEN", "Not launched yet"],
@@ -1835,13 +2522,13 @@ export function App() {
           <SectionHead
             kicker="The Game"
             title="DEEP DIVE"
-            intro="One dive, 60 seconds. Gems rise past you as you sink — grab them, dodge the rocks, watch your oxygen. Your score is your depth plus your gems, and every gem is multiplied by the layer you are in: ×1 at the Surface, up to ×5 in the Heart. How often you can dive depends on your tier: legendary NFT holders play without limits, free-NFT holders get 3 plays a day, and guests get 1 practice play a day — plays are counted on the server and reset at 00:00 UTC."
+            intro="One dive, 60 seconds. Gems rise past you as you sink — grab them, dodge the rocks, watch your oxygen. Your score is your depth plus your gems, and every gem is multiplied by the layer you are in: ×1 at the Surface, up to ×5 in the Heart. On this page dives run in local mode: unlimited practice, with gems, scores and missions saved on your device. Where a server is connected, legendary NFT holders play without limits, free-NFT holders get 3 plays a day, and guests get 1 practice play a day — plays reset at 00:00 UTC."
           />
           <div className="chunk mt-8 p-2 sm:p-6" style={{ "--chunk-shadow": "#C97B2D" } as CSSProperties}>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <h3 className="pixel-h text-xs sm:text-sm">DEEP DIVE — ONE RUN</h3>
               <span className="chunk-sm bg-[#FF8A3D] px-2.5 py-1 font-mono text-[11px] font-bold uppercase tracking-[0.15em] text-[#070708]" style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}>
-                Legendary: unlimited · Free NFT: 3/day
+                {localMode ? "Local mode — unlimited practice" : "Legendary: unlimited · Free NFT: 3/day"}
               </span>
             </div>
             <AccessPanel
@@ -1853,6 +2540,7 @@ export function App() {
               onTierChange={changeTier}
               access={accessQuery.data ?? null}
               accessLoading={accessQuery.isFetching}
+              localMode={localMode}
             />
             <p className="mb-4 max-w-3xl text-sm leading-relaxed text-[var(--dim)]">
               You have <strong className="text-[var(--text)]">60 seconds</strong> and{" "}
@@ -1860,20 +2548,31 @@ export function App() {
               Cracked +20, Ember +30, Heart +50 — times the layer multiplier. Oxygen
               drains faster the deeper you go, so grab the rising air bubbles. A
               falling rock costs 1 oxygen and 15 points; a jellyfish sting costs 1
-              oxygen. Chain gems without a break for combo bonuses.
+              oxygen. Chain gems without a break for combo bonuses. Press SHIFT
+              or the DASH button for a quick burst that makes you briefly
+              untouchable. Mid-dive events shake things up: GEM RUSH floods the
+              water with gems, JELLY SWARM doubles every gem while the
+              jellyfish close in, and BUBBLE SURGE fills the water with air.
             </p>
             <DeepDive
               onFinish={(result) => {
                 setLastRun(result);
                 setSubmittedRank(null);
+                const next = recordRun(result);
+                setProgress(next.snapshot);
+                setJustCompleted(next.newlyCompleted);
+                setGemsTotal(next.snapshot.total);
+                setBestScore(next.snapshot.best);
               }}
-              access={trimmedName ? access : null}
-              accessLoading={accessQuery.isFetching}
+              access={localMode ? LOCAL_ACCESS : trimmedName ? access : null}
+              accessLoading={localMode ? false : accessQuery.isFetching}
               onStartRequest={async (): Promise<StartVerdict> => {
+                if (localMode) return { allowed: true, access: LOCAL_ACCESS };
                 if (!trimmedName) return { allowed: false, access: null };
                 return handleStartRequest();
               }}
               submittedRank={submittedRank}
+              localMode={localMode}
             />
             <SaveDiveForm
               run={lastRun}
@@ -1887,7 +2586,9 @@ export function App() {
                 const v = Number(localStorage.getItem("kryntar-gems-total") ?? 0);
                 setGemsTotal(Number.isFinite(v) ? v : 0);
               }}
+              localMode={localMode}
             />
+            <MissionsPanel progress={progress} justCompleted={justCompleted} />
 
             {/* my gems */}
             <div className="chunk-sm mt-6 bg-[#0B0B0C] p-4 sm:p-5" style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}>
@@ -1895,8 +2596,8 @@ export function App() {
                 <div>
                   <h3 className="pixel-h text-xs sm:text-sm">MY GEMS</h3>
                   <p className="mt-2 max-w-xl text-sm leading-relaxed text-[var(--dim)]">
-                    Gems from the dives you submitted on this device. They
-                    are counted here, under your name.
+                    Gems from every dive you finished on this device — server
+                    or not. They are counted here, under your name.
                   </p>
                 </div>
                 <div className="flex gap-6 font-mono">
@@ -1910,6 +2611,21 @@ export function App() {
                   </div>
                 </div>
               </div>
+              <ul className="mt-4 grid grid-cols-2 gap-2 font-mono text-sm sm:grid-cols-4">
+                {BANK_KINDS.map((k) => (
+                  <li key={k.id} className="flex items-center justify-between gap-2">
+                    <span>
+                      <span
+                        className="mr-2 inline-block h-2.5 w-2.5"
+                        style={{ background: k.color }}
+                        aria-hidden="true"
+                      />
+                      {k.label}
+                    </span>
+                    <span className="font-bold">× {progress.bank[k.id]}</span>
+                  </li>
+                ))}
+              </ul>
               <div className="core-line mt-4 h-0.5 w-full opacity-70" aria-hidden="true" />
               <p className="mt-4 text-sm leading-relaxed text-[var(--dim)]">
                 <strong className="text-[var(--text)]">Gems → token, later.</strong>{" "}
@@ -1924,6 +2640,7 @@ export function App() {
         </section>
 
         <LeaderboardSection wallet={playerWallet} />
+        <ScoresSection wallet={playerWallet} />
 
         {/* -------------------------------- world ------------------------------ */}
         <section id="world" className="scroll-mt-24 pt-20">

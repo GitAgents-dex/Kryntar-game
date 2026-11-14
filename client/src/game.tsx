@@ -6,11 +6,19 @@
 // Core ×3, Heart ×5. Rocks fall, jellyfish drift and sting — both cost
 // 1 oxygen. Air bubbles give oxygen back. No prize pool.
 //
+// SHIFT (or the DASH button) fires a short burst that is briefly
+// untouchable. Twice a dive a random event bends the odds for 8 seconds:
+// GEM RUSH floods gems, JELLY SWARM doubles every gem while jellyfish
+// close in, BUBBLE SURGE floods air. Sounds are a tiny WebAudio synth —
+// no audio assets — and can be muted with the SOUND button.
+//
 // Play access is enforced by the parent through `access`: starting a dive
 // asks the server (`onStartRequest`) to spend one of today's plays —
 // legendary holders unlimited, free holders 3/day, guests 1 practice
 // play/day (guests cannot submit scores). The Game Over panel offers a
 // Post to X share once the run has been submitted to the leaderboard.
+// In local mode (`localMode`) there is no server: dives start
+// immediately, unlimited, and are saved on the device only.
 
 import {
 useCallback,
@@ -28,6 +36,8 @@ export type RunResult = {
   gems: number;
   depth: number;
   counts: Record<GemKind, number>;
+  /** Best combo chain reached during the run. */
+  maxCombo: number;
 };
 
 const W = 720;
@@ -47,6 +57,16 @@ type Item = {
   drift: number;
 };
 type Popup = { x: number; y: number; text: string; color: string; t: number };
+type Spark = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  max: number;
+  color: string;
+  size: number;
+};
 type Phase = "idle" | "running" | "paused" | "over";
 
 /** Depth layer + score multiplier for a given depth in metres. */
@@ -218,6 +238,155 @@ function drawMap(
   }
 }
 
+function burst(
+  sparks: Spark[],
+  x: number,
+  y: number,
+  color: string,
+  n: number,
+  speed: number,
+): void {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const v = speed * (0.4 + Math.random() * 0.8);
+    sparks.push({
+      x,
+      y,
+      vx: Math.cos(a) * v,
+      vy: Math.sin(a) * v - 60,
+      life: 0.5 + Math.random() * 0.3,
+      max: 0.8,
+      color,
+      size: 3 + Math.random() * 3,
+    });
+  }
+}
+
+/* ------------------------------ sound fx --------------------------------- */
+/* Tiny WebAudio synth — no audio assets. Created lazily on the first user
+ * gesture (browsers block audio before one). All calls are no-ops when
+ * audio is unavailable or muted. */
+
+let audioCtx: AudioContext | null = null;
+let audioMuted = false;
+
+function ensureAudio(): AudioContext | null {
+  if (audioMuted) return null;
+  try {
+    if (!audioCtx) {
+      const AC =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext?: typeof AudioContext })
+          .webkitAudioContext;
+      if (!AC) return null;
+      audioCtx = new AC();
+    }
+    if (audioCtx.state === "suspended") void audioCtx.resume();
+    return audioCtx;
+  } catch {
+    return null;
+  }
+}
+
+function setDiveMuted(muted: boolean): void {
+  audioMuted = muted;
+}
+
+function tone(
+  freq: number,
+  dur: number,
+  type: OscillatorType,
+  vol: number,
+  slideTo?: number,
+  delay = 0,
+): void {
+  const ctx = ensureAudio();
+  if (!ctx) return;
+  try {
+    const t0 = ctx.currentTime + delay;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    if (slideTo) {
+      osc.frequency.exponentialRampToValueAtTime(Math.max(20, slideTo), t0 + dur);
+    }
+    gain.gain.setValueAtTime(vol, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  } catch {
+    // Silence is fine.
+  }
+}
+
+const GEM_TONES: Record<GemKind, number> = {
+  pale: 520,
+  cracked: 620,
+  ember: 740,
+  heart: 880,
+};
+function sfxGem(kind: GemKind): void {
+  const f = GEM_TONES[kind];
+  tone(f, 0.09, "square", 0.06);
+  if (kind === "heart") tone(f * 2, 0.16, "square", 0.05, undefined, 0.07);
+}
+function sfxCombo(): void {
+  tone(660, 0.07, "square", 0.05);
+  tone(880, 0.07, "square", 0.05, undefined, 0.06);
+  tone(1320, 0.12, "square", 0.05, undefined, 0.12);
+}
+function sfxHit(): void {
+  tone(160, 0.22, "sawtooth", 0.08, 50);
+}
+function sfxAir(): void {
+  tone(300, 0.14, "sine", 0.06, 620);
+}
+function sfxDash(): void {
+  tone(900, 0.16, "sine", 0.05, 220);
+}
+function sfxEvent(): void {
+  tone(523, 0.09, "square", 0.06);
+  tone(659, 0.09, "square", 0.06, undefined, 0.08);
+  tone(784, 0.16, "square", 0.06, undefined, 0.16);
+}
+function sfxLayer(): void {
+  tone(440, 0.1, "triangle", 0.05);
+  tone(660, 0.14, "triangle", 0.05, undefined, 0.08);
+}
+function sfxOver(): void {
+  tone(392, 0.14, "triangle", 0.06);
+  tone(311, 0.14, "triangle", 0.06, undefined, 0.13);
+  tone(233, 0.24, "triangle", 0.06, undefined, 0.26);
+}
+
+/* ------------------------------ dive events ------------------------------ */
+
+type GameEvent = "rush" | "swarm" | "surge";
+const EVENT_DEFS: Record<
+  GameEvent,
+  { title: string; sub: string; tint: string }
+> = {
+  rush: {
+    title: "GEM RUSH!",
+    sub: "GEMS EVERYWHERE — GRAB THEM ALL",
+    tint: "rgba(255,138,61,0.05)",
+  },
+  swarm: {
+    title: "JELLY SWARM!",
+    sub: "DANGER — BUT EVERY GEM IS WORTH ×2",
+    tint: "rgba(185,138,224,0.06)",
+  },
+  surge: {
+    title: "BUBBLE SURGE!",
+    sub: "AIR EVERYWHERE — BREATHE EASY",
+    tint: "rgba(232,227,216,0.04)",
+  },
+};
+const EVENT_SECONDS = 8;
+
 /* --------------------------------- game ---------------------------------- */
 
 export type PlayAccess = {
@@ -239,6 +408,7 @@ export function DeepDive({
   accessLoading,
   onStartRequest,
   submittedRank,
+  localMode,
 }: {
   onFinish: (result: RunResult) => void;
   /** Today's server-counted play access for the current player identity. */
@@ -250,6 +420,8 @@ export function DeepDive({
   /** Leaderboard rank of the just-submitted run, once the player saved
    *  it — unlocks the Post to X button in the Game Over panel. */
   submittedRank: number | null;
+  /** No server: dives start immediately, unlimited, saved on the device. */
+  localMode: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [phase, setPhase] = useState<Phase>("idle");
@@ -262,6 +434,7 @@ export function DeepDive({
     layer: "SURFACE",
     gems: 0,
     combo: 0,
+    dashCd: 0,
   });
   const [finalRun, setFinalRun] = useState<RunResult | null>(null);
   const [startBlocked, setStartBlocked] = useState<string | null>(null);
@@ -270,6 +443,7 @@ export function DeepDive({
     const v = Number(localStorage.getItem("kryntar-dive-best") ?? 0);
     return Number.isFinite(v) ? v : 0;
   });
+  const [muted, setMuted] = useState(false);
 
   const g = useRef({
     diverX: W / 2,
@@ -298,6 +472,15 @@ export function DeepDive({
     invuln: 0,
     combo: 0,
     comboT: 0,
+    maxCombo: 0,
+    sparks: [] as Spark[],
+    dashT: 0,
+    dashCd: 0,
+    lastDir: 1,
+    event: null as GameEvent | null,
+    eventT: 0,
+    eventAt: [16, 36],
+    eventBannerT: 0,
     layerIdx: 0,
     layerFlashT: 0,
     finT: 0,
@@ -324,6 +507,7 @@ export function DeepDive({
       layer: layer.name,
       gems: s.gems,
       combo: s.combo,
+      dashCd: Math.max(0, s.dashCd),
     });
   }, [totalScore]);
 
@@ -336,10 +520,12 @@ export function DeepDive({
       gems: s.gems,
       depth: Math.floor(s.depth),
       counts: { ...s.counts },
+      maxCombo: s.maxCombo,
     };
     setPhase("over");
     setFinalRun(result);
     syncHud();
+    sfxOver();
     setBest((prev) => {
       const next = Math.max(prev, result.score);
       localStorage.setItem("kryntar-dive-best", String(next));
@@ -367,6 +553,15 @@ export function DeepDive({
     s.invuln = 0;
     s.combo = 0;
     s.comboT = 0;
+    s.maxCombo = 0;
+    s.sparks = [];
+    s.dashT = 0;
+    s.dashCd = 0;
+    s.lastDir = 1;
+    s.event = null;
+    s.eventT = 0;
+    s.eventAt = [14 + Math.random() * 6, 34 + Math.random() * 8];
+    s.eventBannerT = 0;
     s.layerIdx = 0;
     s.layerFlashT = 0;
     s.diverX = W / 2;
@@ -380,9 +575,15 @@ export function DeepDive({
   }, [syncHud]);
 
   /** Start is gated by the server-side daily quota: the parent asks the
-   *  server to spend one play, and the dive only begins when allowed. */
+   *  server to spend one play, and the dive only begins when allowed.
+   *  In local mode there is no server, so dives start immediately. */
   const handleStart = useCallback(async () => {
+    ensureAudio();
     if (phaseRef.current === "running" || phaseRef.current === "paused") {
+      startRun();
+      return;
+    }
+    if (localMode) {
       startRun();
       return;
     }
@@ -413,7 +614,22 @@ export function DeepDive({
     } finally {
       setStartPending(false);
     }
-  }, [onStartRequest, startPending, startRun]);
+  }, [localMode, onStartRequest, startPending, startRun]);
+
+  /** Dash: a short horizontal burst with brief invulnerability. 4s cooldown. */
+  const triggerDash = useCallback(() => {
+    const s = g.current;
+    if (phaseRef.current !== "running" || s.dashCd > 0) return;
+    ensureAudio();
+    if (s.keys.left) s.lastDir = -1;
+    else if (s.keys.right) s.lastDir = 1;
+    else if (s.targetX !== null) s.lastDir = s.targetX < s.diverX ? -1 : 1;
+    s.dashT = 0.45;
+    s.dashCd = 4;
+    s.invuln = Math.max(s.invuln, 0.45);
+    sfxDash();
+    syncHud();
+  }, [syncHud]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -447,6 +663,10 @@ export function DeepDive({
       ctx.fillRect(-12, -12, W + 24, H + 24);
       if (layer.idx >= 2) {
         ctx.fillStyle = `rgba(255,138,61,${layer.idx === 3 ? 0.07 : 0.04})`;
+        ctx.fillRect(-12, -12, W + 24, H + 24);
+      }
+      if (s.event) {
+        ctx.fillStyle = EVENT_DEFS[s.event].tint;
         ctx.fillRect(-12, -12, W + 24, H + 24);
       }
 
@@ -486,6 +706,7 @@ export function DeepDive({
         if (nowLayer.idx !== s.layerIdx) {
           s.layerIdx = nowLayer.idx;
           s.layerFlashT = 1.5;
+          sfxLayer();
         }
         // oxygen drains with time, faster in the deep layers
         s.oxygen -= dt * (0.015 + nowLayer.idx * 0.0035);
@@ -497,16 +718,49 @@ export function DeepDive({
           s.comboT -= dt;
           if (s.comboT <= 0) s.combo = 0;
         }
+        if (s.dashT > 0) s.dashT -= dt;
+        if (s.dashCd > 0) s.dashCd -= dt;
+        if (s.eventBannerT > 0) s.eventBannerT -= dt;
+        if (s.event) {
+          s.eventT -= dt;
+          if (s.eventT <= 0) s.event = null;
+        } else if (s.eventAt.length > 0 && s.elapsed >= (s.eventAt[0] ?? 999)) {
+          s.eventAt.shift();
+          const pool: GameEvent[] = ["rush", "swarm", "surge"];
+          const pick = pool[Math.floor(Math.random() * pool.length)] ?? "rush";
+          s.event = pick;
+          s.eventT = EVENT_SECONDS;
+          s.eventBannerT = 2;
+          sfxEvent();
+        }
         s.finT += dt;
 
         // steering — velocity with acceleration and drag; a pointer target
         // pulls smoothly, keys take over the moment they are pressed
         const ACCEL = 2600;
         const MAXV = 480;
-        if (s.keys.left || s.keys.right) {
+        if (s.dashT > 0) {
+          s.velX = s.lastDir * 1050;
+          s.sparks.push({
+            x: s.diverX - s.lastDir * 34,
+            y: DIVER_Y + (Math.random() - 0.5) * 44,
+            vx: -s.lastDir * (120 + Math.random() * 120),
+            vy: (Math.random() - 0.5) * 40,
+            life: 0.3,
+            max: 0.3,
+            color: "#E8E3D8",
+            size: 4,
+          });
+        } else if (s.keys.left || s.keys.right) {
           s.targetX = null;
-          if (s.keys.left) s.velX -= ACCEL * dt;
-          if (s.keys.right) s.velX += ACCEL * dt;
+          if (s.keys.left) {
+            s.velX -= ACCEL * dt;
+            s.lastDir = -1;
+          }
+          if (s.keys.right) {
+            s.velX += ACCEL * dt;
+            s.lastDir = 1;
+          }
         } else if (s.targetX !== null) {
           const diff = s.targetX - s.diverX;
           s.velX = Math.max(-MAXV, Math.min(MAXV, diff * 13));
@@ -515,7 +769,8 @@ export function DeepDive({
           s.velX -= s.velX * Math.min(1, dt * 9);
           if (Math.abs(s.velX) < 4) s.velX = 0;
         }
-        s.velX = Math.max(-MAXV, Math.min(MAXV, s.velX));
+        const cap = s.dashT > 0 ? 1050 : MAXV;
+        s.velX = Math.max(-cap, Math.min(cap, s.velX));
         s.diverX += s.velX * dt;
         if (s.diverX < 44) {
           s.diverX = 44;
@@ -543,11 +798,18 @@ export function DeepDive({
           return b.y > -8;
         });
 
-        // spawns — gems & air rise from below, rocks fall, jellyfish drift
+        // spawns — gems & air rise from below, rocks fall, jellyfish drift.
+        // Events bend the odds: GEM RUSH floods gems, BUBBLE SURGE floods air.
         s.spawnIn -= dt;
         if (s.spawnIn <= 0) {
-          s.spawnIn = 0.42 + Math.random() * 0.3;
-          const kind = pickKind(s.depth);
+          s.spawnIn =
+            s.event === "rush" ? 0.16 + Math.random() * 0.1 : 0.42 + Math.random() * 0.3;
+          let kind = pickKind(s.depth);
+          if (s.event === "rush" && (kind === "rock" || kind === "air")) {
+            kind = s.depth >= 900 ? "ember" : "cracked";
+          }
+          if (s.event === "surge" && Math.random() < 0.45) kind = "air";
+          if (s.event === "surge" && kind === "rock") kind = "pale";
           const rise = 185 + Math.random() * 85 + s.elapsed * 2.6 + nowLayer.idx * 13;
           s.items.push({
             x: 36 + Math.random() * (W - 120),
@@ -560,7 +822,8 @@ export function DeepDive({
         }
         s.hazIn -= dt;
         if (s.hazIn <= 0) {
-          s.hazIn = 2.6 + Math.random() * 1.6;
+          s.hazIn =
+            s.event === "swarm" ? 0.6 + Math.random() * 0.4 : 2.6 + Math.random() * 1.6;
           s.items.push({
             x: 44 + Math.random() * (W - 130),
             y: H + 48,
@@ -571,7 +834,7 @@ export function DeepDive({
           });
         }
 
-        const mult = nowLayer.mult;
+        const mult = nowLayer.mult * (s.event === "swarm" ? 2 : 1);
         s.items = s.items.filter((it) => {
           it.y += it.vy * dt;
           if (it.kind === "jelly") {
@@ -597,6 +860,8 @@ export function DeepDive({
               s.flash = 1;
               s.shake = 1;
               s.invuln = 1.2;
+              sfxHit();
+              burst(s.sparks, s.diverX, DIVER_Y, "#FF7A6B", 10, 220);
               s.combo = 0;
               s.comboT = 0;
               s.popups.push({
@@ -612,6 +877,7 @@ export function DeepDive({
           }
           if (it.kind === "air") {
             s.oxygen = Math.min(MAX_OXYGEN, s.oxygen + 0.5);
+            sfxAir();
             s.popups.push({ x: it.x, y: it.y - 28, text: "+0.5 O₂", color: "#B9B2A4", t: 0 });
             syncHud();
             return false;
@@ -622,9 +888,20 @@ export function DeepDive({
           s.gems += 1;
           s.counts[kind] += 1;
           s.combo += 1;
+          s.maxCombo = Math.max(s.maxCombo, s.combo);
           s.comboT = 2.2;
+          sfxGem(kind);
+          burst(
+            s.sparks,
+            it.x,
+            it.y,
+            GEM_COLORS[kind],
+            kind === "heart" ? 14 : 7,
+            kind === "heart" ? 260 : 170,
+          );
           if (s.combo > 0 && s.combo % 3 === 0) {
             s.gemPoints += 5;
+            sfxCombo();
             s.popups.push({
               x: s.diverX,
               y: DIVER_Y - 84,
@@ -648,6 +925,14 @@ export function DeepDive({
           p.t += dt;
           p.y -= 56 * dt;
           return p.t < 0.95;
+        });
+
+        s.sparks = s.sparks.filter((sp) => {
+          sp.life -= dt;
+          sp.x += sp.vx * dt;
+          sp.y += sp.vy * dt;
+          sp.vy += 320 * dt;
+          return sp.life > 0;
         });
 
         if (s.oxygen <= 0 || s.elapsed >= RUN_SECONDS) {
@@ -688,6 +973,14 @@ export function DeepDive({
       ctx.fillStyle = "rgba(232,227,216,0.55)";
       for (const b of s.bubbles) ctx.fillRect(b.x, b.y, b.r, b.r);
 
+      // collect / hit sparks
+      for (const sp of s.sparks) {
+        ctx.globalAlpha = Math.max(0, sp.life / sp.max);
+        ctx.fillStyle = sp.color;
+        ctx.fillRect(sp.x - sp.size / 2, sp.y - sp.size / 2, sp.size, sp.size);
+      }
+      ctx.globalAlpha = 1;
+
       // diver — chibi helmet, glowing visor, kicking fins (blinks after a hit)
       const blink = s.invuln > 0 && Math.floor(t / 110) % 2 === 0;
       if (!blink) {
@@ -723,6 +1016,28 @@ export function DeepDive({
         ctx.globalAlpha = 1;
       }
 
+      // event banner + active event chip
+      if (s.event) {
+        const def = EVENT_DEFS[s.event];
+        if (s.eventBannerT > 0) {
+          const alpha = Math.min(1, s.eventBannerT / 0.7);
+          ctx.globalAlpha = alpha;
+          ctx.textAlign = "center";
+          ctx.fillStyle = "#FFC46B";
+          ctx.font = "17px 'Press Start 2P', monospace";
+          ctx.fillText(def.title, W / 2, 140);
+          ctx.font = "13px 'Space Mono', monospace";
+          ctx.fillStyle = "#E8E3D8";
+          ctx.fillText(def.sub, W / 2, 166);
+          ctx.globalAlpha = 1;
+        } else {
+          ctx.textAlign = "center";
+          ctx.font = "bold 13px 'Space Mono', monospace";
+          ctx.fillStyle = "#FFC46B";
+          ctx.fillText(`${def.title} ${Math.ceil(s.eventT)}S`, W / 2, 30);
+        }
+      }
+
       if (s.flash > 0) {
         ctx.fillStyle = `rgba(255,70,70,${(s.flash * 0.17).toFixed(3)})`;
         ctx.fillRect(-12, -12, W + 24, H + 24);
@@ -741,7 +1056,7 @@ export function DeepDive({
         ctx.fillText(sub, W / 2, H / 2 + 28);
       };
       if (phaseRef.current === "idle") {
-        overlay("DIVE DEEP!", "DRAG OR ← → TO MOVE · 60 SECONDS · 3 OXYGEN");
+        overlay("DIVE DEEP!", "DRAG OR ← → TO MOVE · SHIFT TO DASH · 60 SECONDS · 3 OXYGEN");
       }
       if (phaseRef.current === "paused") {
         overlay("PAUSED", "PRESS RESUME TO KEEP DIVING");
@@ -769,6 +1084,9 @@ export function DeepDive({
         if (phaseRef.current === "running") setPhase("paused");
         else if (phaseRef.current === "paused") setPhase("running");
       }
+      if (e.key === "Shift" && !e.repeat) {
+        triggerDash();
+      }
     };
     const up = (e: KeyboardEvent) => {
       if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") g.current.keys.left = false;
@@ -780,7 +1098,7 @@ export function DeepDive({
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, []);
+  }, [triggerDash]);
 
   const pointTo = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -793,7 +1111,7 @@ export function DeepDive({
 
   return (
     <div>
-      <div className="mb-3 grid grid-cols-2 gap-2 font-mono sm:grid-cols-4 lg:grid-cols-7">
+      <div className="mb-3 grid grid-cols-2 gap-2 font-mono sm:grid-cols-4 lg:grid-cols-8">
         {[
           ["SCORE", String(hud.score)],
           ["DEPTH", `${hud.depth} M`],
@@ -801,6 +1119,7 @@ export function DeepDive({
           ["TIME", `${hud.time}S`],
           ["GEMS", String(hud.gems)],
           ["COMBO", hud.combo >= 2 ? `×${hud.combo}` : "—"],
+          ["DASH", hud.dashCd > 0 ? `${Math.ceil(hud.dashCd)}S` : "READY"],
         ].map(([k, v]) => (
           <div key={k} className="chunk-sm bg-[#0B0B0C] px-3 py-2.5" style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}>
             <span className="block text-[11px] tracking-[0.2em] text-[var(--dim)]">{k}</span>
@@ -867,6 +1186,29 @@ export function DeepDive({
         >
           {phase === "paused" ? "Resume" : "Pause"}
         </button>
+        <button
+          type="button"
+          onClick={triggerDash}
+          disabled={phase !== "running" || hud.dashCd > 0}
+          className="chunk-sm bg-transparent px-6 py-3 font-mono text-sm font-bold uppercase tracking-[0.15em] text-[var(--text)] disabled:opacity-40"
+          style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+        >
+          Dash
+        </button>
+        <button
+          type="button"
+          aria-pressed={muted}
+          onClick={() => {
+            const next = !muted;
+            setMuted(next);
+            setDiveMuted(next);
+            if (!next) ensureAudio();
+          }}
+          className="chunk-sm bg-transparent px-6 py-3 font-mono text-sm font-bold uppercase tracking-[0.15em] text-[var(--text)]"
+          style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+        >
+          {muted ? "Sound off" : "Sound on"}
+        </button>
         <div className="ml-auto flex gap-2 sm:hidden">
           <button
             type="button"
@@ -896,7 +1238,13 @@ export function DeepDive({
       </div>
 
       {(phase === "idle" || phase === "over") &&
-        (accessLoading ? (
+        (localMode ? (
+          <p className="mt-3 font-mono text-xs text-[var(--dim)]" role="status">
+            <span className="font-bold text-[#FFC46B]">Local mode</span> — no
+            server here, so dives are unlimited practice runs. Scores, gems
+            and missions are saved on this device only.
+          </p>
+        ) : accessLoading ? (
           <p className="mt-3 font-mono text-xs text-[var(--dim)]" role="status">
             Checking today's plays with the server…
           </p>
@@ -970,10 +1318,27 @@ export function DeepDive({
           <p className="mt-4 text-sm leading-relaxed text-[var(--dim)]">
             Total gems brought up:{" "}
             <strong className="text-[var(--text)]">{finalRun.gems}</strong>.{" "}
-            {access?.canSubmit
-              ? "Submit the dive below and it lands on the leaderboard and in My Gems."
-              : "Guest dives are practice only — scores from guests cannot be submitted to the leaderboard."}
+            {localMode
+              ? "Saved to your gem bank on this device — see My Gems and Missions below."
+              : access?.canSubmit
+                ? "Submit the dive below and it lands on the leaderboard and in My Gems."
+                : "Guest dives are practice only — scores from guests cannot be submitted to the leaderboard."}
           </p>
+          {localMode && (
+            <div className="mt-4 flex flex-wrap items-center gap-3 border-t-2 border-[#201E1A] pt-4">
+              <a
+                href={`https://x.com/intent/post?text=${encodeURIComponent(
+                  `I scored ${finalRun.score} in Kryntar DEEP DIVE — ${finalRun.depth} m deep, ${finalRun.gems} Kryn gems hauled up. #Kryntar`,
+                )}`}
+                target="_blank"
+                rel="noreferrer"
+                className="chunk-sm bg-[#E8E3D8] px-4 py-2 font-mono text-xs font-bold uppercase tracking-[0.15em] text-[#070708]"
+                style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+              >
+                Post to X
+              </a>
+            </div>
+          )}
           {submittedRank !== null && (
             <div className="mt-4 flex flex-wrap items-center gap-3 border-t-2 border-[#201E1A] pt-4">
               <p className="font-mono text-xs">
@@ -1006,7 +1371,7 @@ export function DeepDive({
         <li><span className="mr-1.5 inline-block h-3 w-3 bg-[#B98AE0]" />Jellyfish · stings, −1 oxygen</li>
       </ul>
       <p className="mt-2 font-mono text-[13px] text-[var(--dim)]">
-        Move: drag on the arena, arrow keys / A D, or the hold buttons · Space: pause &amp; resume · Grab gems in a row for combo bonuses
+        Move: drag on the arena, arrow keys / A D, or the hold buttons · Shift or DASH: quick burst, briefly untouchable · Space: pause &amp; resume · Watch for GEM RUSH, JELLY SWARM and BUBBLE SURGE mid-dive · Grab gems in a row for combo bonuses
       </p>
     </div>
   );
