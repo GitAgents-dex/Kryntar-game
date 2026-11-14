@@ -3,10 +3,11 @@
 //
 // PLAY ACCESS (counted on the server, per player identity per UTC day):
 // a player identity is the diver name + optional wallet string they type
-// in. Identity is self-declared — the Kryntar NFT contract is not live
-// yet, so there is no on-chain holder check; the tier a player picks is
-// taken at face value until the contract ships and verification can be
-// switched on. Quotas per UTC day (reset 00:00 UTC):
+// in. Identity is self-declared — the Kryntar NFT contract is live on
+// BNB Chain, but on-chain holder verification is being connected and
+// is not active yet, so there is no on-chain holder check today; the
+// tier a player picks is taken at face value. Quotas per UTC day
+// (reset 00:00 UTC):
 //   legendary holder — unlimited plays
 //   free holder      — 3 plays, every finished dive can be submitted
 //   guest (no NFT)   — 1 practice play, score CANNOT be submitted
