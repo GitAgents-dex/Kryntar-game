@@ -52,5 +52,23 @@
       data-generated-space-root=""
       data-generated-space-slug="kryntar"
     ></div>
+    <script>
+      (() => {
+        const addKryntarXLink = () => {
+          const footer = document.querySelector("footer");
+          if (!footer || footer.querySelector("[data-kryntar-x-link]")) return;
+          const link = document.createElement("a");
+          link.href = "https://x.com/kryntar";
+          link.target = "_blank";
+          link.rel = "noreferrer";
+          link.dataset.kryntarXLink = "true";
+          link.className = "mt-4 inline-block font-mono text-xs font-bold uppercase tracking-[0.15em] text-[#FF8A3D] underline underline-offset-4 transition-colors hover:text-[var(--text)]";
+          link.textContent = "Follow Kryntar on X";
+          footer.appendChild(link);
+        };
+        new MutationObserver(addKryntarXLink).observe(document.body, { childList: true, subtree: true });
+        addKryntarXLink();
+      })();
+    </script>
   </body>
 </html>
