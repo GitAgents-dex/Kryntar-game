@@ -1,5 +1,21 @@
 # Data Plan
 
+## Edit — LP BOOTSTRAP TRACKER (2026-11-14, fee-bootstrap: $KRYN liquidity with no new capital)
+
+A live "LP Bootstrap" card at the bottom of the Claim section (anchor
+#lp-bootstrap), plus a one-line mention under the Mint section. The card
+reads the BNB balances of the three fee-holding contracts live via
+ethGetBalance (NFT mint fees, KrynClaim claim fees, KryntarScores score
+fees), shows the combined total against the 0.2 BNB pairing target with a
+progress bar and percentage, a per-contract breakdown, and an "Updated
+HH:MM:SS UTC" line, refreshing every 60s with a Refresh button. A failed
+read keeps the last-known numbers and says so; nothing is hardcoded
+except the 0.2 BNB target and the 10,000,000 $KRYN pairing amount. The
+commitment text: when the total hits 0.2 BNB, the fees are withdrawn and
+paired with 10,000,000 $KRYN on PancakeSwap, and the LP tokens are
+burned. No changes to the game, holder board, scores board, or mint /
+claim logic.
+
 ## Edit — SHARE BUTTONS + AGENTS BLOCK + DISCOVERY FILES (2026-11-14, growth: paid mints + $KRYN claims)
 
 Share on X buttons (plain twitter.com/intent/tweet links, prefilled text +
