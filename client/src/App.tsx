@@ -218,6 +218,9 @@ const SELECTORS = {
   freeCount: "0x958c8848",
   deepCount: "0xed7ab442",
   legendaryCount: "0x211e52c1",
+  standardIdAt: "0xe2623512",
+  legendaryIdAt: "0x351e92d2",
+  ownerOf: "0x6352211e",
   hasAgentId: "0x4eab3ef2",
 };
 
@@ -400,6 +403,201 @@ const LANES: Record<
   },
 };
 
+/* ================= board data (on-chain) — start ================= */
+/* The board reads holdings straight from BNB Chain: no server, and no
+ * event logs (the public BSC endpoints reject eth_getLogs). Minting is
+ * sequential from fixed pools, so the minted IDs are exactly
+ * standardIdAt(0..S-1) and legendaryIdAt(0..L-1); one batched multicall
+ * reads every ID, a second reads every current owner. */
+
+const MULTICALL_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11";
+const MULTICALL_CHUNK = 250;
+
+type BoardHolder = {
+  wallet: string;
+  held: number;
+  legendaryHeld: number;
+  /** Earliest mint in pool order (standard-pool index, legendary-pool
+   *  indices offset by 100000: cross-pool mint order is not observable
+   *  without event logs, so the standard pool orders first by convention). */
+  firstMint: number;
+};
+
+type BoardData = {
+  holders: BoardHolder[];
+  totalHolders: number;
+  totalMinted: number;
+  legendaryMinted: number;
+  updatedAt: string;
+};
+
+function padHex(value: bigint, bytes: number): string {
+  return value.toString(16).padStart(bytes * 2, "0");
+}
+
+function encodeUintCall(selector: string, value: number): string {
+  return selector + padHex(BigInt(value), 32);
+}
+
+/** ABI-encode Multicall3.aggregate((address,bytes)[]). */
+function encodeAggregate(calls: { to: string; data: string }[]): string {
+  const head = "0x252dba42" + padHex(32n, 32) + padHex(BigInt(calls.length), 32);
+  let offsets = "";
+  let tuples = "";
+  // Tuple offsets are relative to the start of the array's elements (just
+  // after the length word): the first tuple starts after all offset words.
+  let cursor = calls.length * 32;
+  for (const c of calls) {
+    offsets += padHex(BigInt(cursor), 32);
+    const dataHex = c.data.startsWith("0x") ? c.data.slice(2) : c.data;
+    const addrHex = c.to.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+    const dataLen = dataHex.length / 2;
+    const paddedLen = Math.ceil(dataLen / 32) * 32;
+    const tuple =
+      addrHex + padHex(64n, 32) + padHex(BigInt(dataLen), 32) + dataHex.padEnd(paddedLen * 2, "0");
+    tuples += tuple;
+    cursor += tuple.length / 2;
+  }
+  return head + offsets + tuples;
+}
+
+function readU256(hex: string, bytePos: number): bigint {
+  const s = hex.slice(bytePos * 2, bytePos * 2 + 64);
+  return s ? BigInt("0x" + s) : 0n;
+}
+
+type MulticallResult = string;
+
+/** Decode Multicall3.aggregate's (uint256, bytes[]) return data. A failing
+ *  subcall reverts the whole batch, so there are no per-call success flags;
+ *  our subcalls (pool ids, owners of minted ids) cannot fail. */
+function decodeAggregate(hex: string): MulticallResult[] {
+  const h = hex.startsWith("0x") ? hex.slice(2) : hex;
+  const arrOff = Number(readU256(h, 32));
+  const len = Number(readU256(h, arrOff));
+  const out: MulticallResult[] = [];
+  for (let i = 0; i < len; i++) {
+    const elemOff = Number(readU256(h, arrOff + 32 + i * 32));
+    // Element offsets are relative to the start of the array's elements
+    // (just after the length word), not to the length word itself.
+    const elemPos = arrOff + 32 + elemOff;
+    const bytesLen = Number(readU256(h, elemPos));
+    const data = "0x" + h.slice((elemPos + 32) * 2, (elemPos + 32 + bytesLen) * 2);
+    out.push(data);
+  }
+  return out;
+}
+
+/** Read-only eth_call to any address, first responding RPC wins. */
+async function ethCallTo(to: string, data: string): Promise<string> {
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "eth_call",
+    params: [{ to, data }, "latest"],
+  });
+  return firstSuccess(
+    RPC_URLS.map(async (url) => {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+      if (!res.ok) throw new Error(`rpc http ${res.status}`);
+      const json = (await res.json()) as { result?: unknown };
+      if (typeof json.result !== "string") throw new Error("rpc error");
+      return json.result;
+    }),
+  );
+}
+
+/** Run calls through Multicall3 in parallel chunks, in call order. */
+async function multicall(calls: { to: string; data: string }[]): Promise<MulticallResult[]> {
+  if (calls.length === 0) return [];
+  const chunks: { to: string; data: string }[][] = [];
+  for (let i = 0; i < calls.length; i += MULTICALL_CHUNK) {
+    chunks.push(calls.slice(i, i + MULTICALL_CHUNK));
+  }
+  const results = await Promise.all(
+    chunks.map(async (chunk) => {
+      const raw = await ethCallTo(MULTICALL_ADDRESS, encodeAggregate(chunk));
+      const decoded = decodeAggregate(raw);
+      if (decoded.length !== chunk.length) throw new Error("multicall result length mismatch");
+      return decoded;
+    }),
+  );
+  return results.flat();
+}
+
+/** Read the full holder ranking from the chain. Two batched passes:
+ *  minted IDs in pool order, then the current owner of every ID. */
+async function fetchBoardData(): Promise<BoardData> {
+  const [standardHex, legendaryHex] = await Promise.all([
+    ethCall(SELECTORS.standardMinted),
+    ethCall(SELECTORS.legendaryMinted),
+  ]);
+  const standardCount = decodeUint(standardHex);
+  const legendaryCount = decodeUint(legendaryHex);
+
+  const idCalls: { to: string; data: string }[] = [];
+  for (let i = 0; i < standardCount; i++) {
+    idCalls.push({ to: CONTRACT_ADDRESS, data: encodeUintCall(SELECTORS.standardIdAt, i) });
+  }
+  for (let i = 0; i < legendaryCount; i++) {
+    idCalls.push({ to: CONTRACT_ADDRESS, data: encodeUintCall(SELECTORS.legendaryIdAt, i) });
+  }
+  const idResults = await multicall(idCalls);
+  const ids: { id: number; legendary: boolean; order: number }[] = [];
+  idResults.forEach((data, i) => {
+    const legendary = i >= standardCount;
+    ids.push({
+      id: Number(BigInt(data)),
+      legendary,
+      order: legendary ? 100000 + (i - standardCount) : i,
+    });
+  });
+
+  const ownerResults = await multicall(
+    ids.map(({ id }) => ({ to: CONTRACT_ADDRESS, data: encodeUintCall(SELECTORS.ownerOf, id) })),
+  );
+  const byWallet = new Map<string, BoardHolder>();
+  ownerResults.forEach((data, i) => {
+    const entry = ids[i];
+    if (!entry) throw new Error("multicall owner read failed");
+    const wallet = ("0x" + data.slice(-40)).toLowerCase();
+    if (wallet === "0x0000000000000000000000000000000000000000") {
+      throw new Error("unminted id in board read");
+    }
+    const cur = byWallet.get(wallet) ?? {
+      wallet,
+      held: 0,
+      legendaryHeld: 0,
+      firstMint: Number.POSITIVE_INFINITY,
+    };
+    cur.held += 1;
+    if (entry.legendary) cur.legendaryHeld += 1;
+    if (entry.order < cur.firstMint) cur.firstMint = entry.order;
+    byWallet.set(wallet, cur);
+  });
+
+  const holders = [...byWallet.values()].sort(
+    (a, b) =>
+      b.held - a.held ||
+      b.legendaryHeld - a.legendaryHeld ||
+      a.firstMint - b.firstMint ||
+      (a.wallet < b.wallet ? -1 : a.wallet > b.wallet ? 1 : 0),
+  );
+  return {
+    holders,
+    totalHolders: holders.length,
+    totalMinted: standardCount + legendaryCount,
+    legendaryMinted: legendaryCount,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/* ================= board data (on-chain) — end ================= */
+
 /* ---------------------------- agent prompts ------------------------------ */
 
 const AGENT_PROMPT_FREE = `Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: ${CONTRACT_ADDRESS}. Call mintFree() and pay exactly 0 BNB (0 wei). You must hold a Binance Agent ID in this wallet (free lane is Agent-ID gated). If mintOpen() returns false, STOP and report to me. Execute once, then send me the transaction hash.`;
@@ -429,7 +627,7 @@ const FAQS = [
   },
   {
     q: "What is the leaderboard?",
-    a: "An online board that runs around the clock. Every score a holder submits is recorded on the server and ranked all-time by score — top 20 shown, with your own best dive pinned below if you rank lower. It is a record of honor only: there are no prizes. After submitting you can post your score and rank to X with one tap.",
+    a: "A board that runs on-chain, not on a server. It reads every Divers NFT straight from BNB Chain and ranks wallets by how many Divers they hold — Legendary held, then earliest mint, break ties. The top 20 are shown, and your own wallet is pinned below if it ranks lower. It refreshes every 60 seconds, and there are no prizes: honor and bragging rights only.",
   },
   {
     q: "Why can't guests submit scores?",
@@ -493,7 +691,6 @@ function SectionHead({
 
 type PlayerTier = "guest" | "free" | "legendary";
 type AccessData = ApiResponse<typeof api, "getAccess">;
-type LbEntry = ApiResponse<typeof api, "getLeaderboard">["entries"][number];
 
 const TIER_LABEL: Record<PlayerTier, string> = {
   guest: "GUEST",
@@ -510,35 +707,13 @@ function loadWallet(): string {
   return localStorage.getItem("kryntar-wallet") ?? "";
 }
 
-/** "2026-11-14 · 17:04 UTC" — leaderboard times are always shown in UTC. */
-function formatUtc(iso: string): string {
-  const d = new Date(iso);
-  const months = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-  ];
-  const p2 = (n: number) => String(n).padStart(2, "0");
-  return `${d.getUTCDate()} ${months[d.getUTCMonth()] ?? ""} ${d.getUTCFullYear()} · ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())} UTC`;
-}
+
 
 function xPostUrl(text: string): string {
   return `https://x.com/intent/post?text=${encodeURIComponent(text)}`;
 }
 
-function TierBadge({ tier }: { tier: string }) {
-  if (tier === "legendary") {
-    return (
-      <span className="bg-[#FFC46B] px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.15em] text-[#070708]">
-        Legendary
-      </span>
-    );
-  }
-  return (
-    <span className="bg-[#3D382E] px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.15em] text-[var(--text)]">
-      Free NFT
-    </span>
-  );
-}
+
 
 function SaveDiveForm({
   run,
@@ -805,11 +980,13 @@ function AccessPanel({
 
 /* ----------------------------- leaderboard ------------------------------- */
 
-function LeaderboardRow({
-  entry,
+function BoardRow({
+  holder,
+  rank,
   isMine,
 }: {
-  entry: LbEntry;
+  holder: BoardHolder;
+  rank: number;
   isMine: boolean;
 }) {
   return (
@@ -818,13 +995,17 @@ function LeaderboardRow({
         isMine ? "bg-[#241708]" : ""
       }`}
     >
-      <span className="w-10 font-mono text-lg font-bold text-[#FF8A3D]">
-        #{entry.rank}
-      </span>
+      <span className="w-10 font-mono text-lg font-bold text-[#FF8A3D]">#{rank}</span>
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-center gap-2">
-          <span className="break-all font-mono text-sm font-bold">{entry.name}</span>
-          <TierBadge tier={entry.tier} />
+          <a
+            href={`https://bscscan.com/address/${holder.wallet}`}
+            target="_blank"
+            rel="noreferrer"
+            className="break-all font-mono text-sm font-bold underline decoration-[#FF8A3D]/60 underline-offset-4"
+          >
+            {shortAddress(holder.wallet)}
+          </a>
           {isMine && (
             <span className="font-mono text-[10px] font-bold uppercase tracking-[0.15em] text-[#FFC46B]">
               You
@@ -832,19 +1013,18 @@ function LeaderboardRow({
           )}
         </span>
         <span className="mt-1 block font-mono text-[11px] text-[var(--dim)]">
-          {entry.depth} m deep · {entry.pearls} gems
-          {entry.wallet ? ` · ${entry.wallet}` : ""} · {formatUtc(entry.created_at)}
+          {holder.legendaryHeld} Legendary · {holder.held - holder.legendaryHeld} Standard held
         </span>
       </span>
-      <span className="font-mono text-xl font-bold">{entry.score}</span>
+      <span className="font-mono text-xl font-bold">{holder.held}</span>
       {isMine && (
         <a
           href={xPostUrl(
-            `I scored ${entry.score} in Kryntar DEEP DIVE — ${entry.depth} m deep, ${entry.pearls} Kryn gems hauled up. Rank #${entry.rank} on the all-time leaderboard. #Kryntar`,
+            `I hold ${holder.held} Kryntar Divers — rank #${rank} on the on-chain board, ${holder.legendaryHeld} Legendary. #Kryntar`,
           )}
           target="_blank"
           rel="noreferrer"
-          aria-label={`Post your rank ${entry.rank} score to X`}
+          aria-label={`Post your rank ${rank} holding to X`}
           className="chunk-sm bg-[#E8E3D8] px-3 py-1.5 font-mono text-[11px] font-bold uppercase tracking-[0.15em] text-[#070708]"
           style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
         >
@@ -855,38 +1035,31 @@ function LeaderboardRow({
   );
 }
 
-function LeaderboardSection({
-  name,
-  wallet,
-}: {
-  name: string;
-  wallet: string;
-}) {
+function LeaderboardSection({ wallet }: { wallet: string }) {
   const board = useQuery({
-    queryKey: ["leaderboard", name.trim().toLowerCase(), wallet.trim().toLowerCase()],
-    queryFn: () =>
-      api.getLeaderboard({
-        name: name.trim() ? name.trim() : undefined,
-        wallet: wallet.trim() ? wallet.trim() : undefined,
-      }),
-    refetchInterval: 30_000,
+    queryKey: ["board-onchain"],
+    queryFn: fetchBoardData,
+    refetchInterval: 60_000,
   });
   const data = board.data;
-  const mine = data?.mine ?? null;
-  const mineInTop = mine !== null && mine.rank <= 20;
+  const mineWallet = wallet.trim().toLowerCase();
+  const mineRank =
+    data && mineWallet ? data.holders.findIndex((h) => h.wallet === mineWallet) + 1 : 0;
+  const mine = mineRank > 0 && data ? (data.holders[mineRank - 1] ?? null) : null;
+  const mineInTop = mineRank > 0 && mineRank <= 20;
 
   return (
     <section id="board" className="scroll-mt-24 pt-20">
       <SectionHead
         kicker="Leaderboard"
-        title="TOP DIVERS — ALL TIME"
-        intro="The online board: every submitted dive is recorded on the server and stays here, ranked by score. It runs around the clock — submit a dive and it appears for every visitor. Honor and bragging rights only: there is no prize pool."
+        title="TOP DIVERS — ON-CHAIN"
+        intro="The board, read straight from BNB Chain — no server, no sign-up. Every Divers NFT is public on-chain, so the ranking is just the truth: wallets ordered by Divers held, Legendary held breaking ties, then earliest mint. It refreshes every 60 s. Mint, and your wallet climbs. Honor and bragging rights only: there are no prizes."
       />
       <div className="chunk mt-8 p-2 sm:p-6" style={{ "--chunk-shadow": "#C97B2D" } as CSSProperties}>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3 px-2 pt-2 sm:px-0 sm:pt-0">
           <p className="font-mono text-xs text-[var(--dim)]">
             {data
-              ? `${data.total} ${data.total === 1 ? "score" : "scores"} recorded · auto-refreshes every 30 s`
+              ? `${data.totalHolders} ${data.totalHolders === 1 ? "holder" : "holders"} · ${data.totalMinted.toLocaleString("en-US")} minted / 2,222 · updated ${data.updatedAt.slice(11, 19)} UTC`
               : "Loading the board…"}
           </p>
           <button
@@ -906,20 +1079,17 @@ function LeaderboardSection({
           </p>
         )}
 
-        {data && data.entries.length === 0 && (
+        {data && data.holders.length === 0 && (
           <p className="px-2 py-6 text-center font-mono text-sm text-[var(--dim)]" role="status">
-            No scores yet. Be the first name on the board — dive, then submit.
+            No Divers minted yet. Be the first name on the board — mint in the
+            section above.
           </p>
         )}
 
-        {data && data.entries.length > 0 && (
+        {data && data.holders.length > 0 && (
           <ol className="divide-y divide-[#201E1A] border-2 border-[#201E1A] bg-[#0B0B0C]">
-            {data.entries.map((e) => (
-              <LeaderboardRow
-                key={e.rank}
-                entry={e}
-                isMine={mine !== null && e.rank === mine.rank}
-              />
+            {data.holders.slice(0, 20).map((h, i) => (
+              <BoardRow key={h.wallet} holder={h} rank={i + 1} isMine={mineRank === i + 1} />
             ))}
           </ol>
         )}
@@ -927,18 +1097,18 @@ function LeaderboardSection({
         {mine && !mineInTop && (
           <div className="mt-4">
             <p className="mb-2 px-2 font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--dim)]">
-              Your best dive — outside the top 20
+              Your wallet — outside the top 20
             </p>
             <ol className="border-2 border-[#C97B2D] bg-[#0B0B0C]">
-              <LeaderboardRow entry={mine} isMine />
+              <BoardRow holder={mine} rank={mineRank} isMine />
             </ol>
           </div>
         )}
 
-        {data && !mine && name.trim() && (
+        {data && !mine && mineWallet && (
           <p className="mt-4 px-2 font-mono text-xs text-[var(--dim)]">
-            No submitted dive under “{name.trim()}” yet — finish a dive and
-            submit it to take your place on the board.
+            No Divers held by “{wallet.trim()}” yet — mint in the section
+            above to take your place on the board.
           </p>
         )}
       </div>
@@ -1753,7 +1923,7 @@ export function App() {
           </div>
         </section>
 
-        <LeaderboardSection name={playerName} wallet={playerWallet} />
+        <LeaderboardSection wallet={playerWallet} />
 
         {/* -------------------------------- world ------------------------------ */}
         <section id="world" className="scroll-mt-24 pt-20">
