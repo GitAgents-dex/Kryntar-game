@@ -247,6 +247,7 @@ const SCORE_SELECTORS = {
   entryOf: "0x58bb388a",
   isPlayer: "0x09c95e10",
   nft: "0x47ccca02",
+  submitFee: "0x3bb45586",
   balanceOf: "0x70a08231",
 };
 
@@ -537,6 +538,45 @@ async function ethCallTo(to: string, data: string): Promise<string> {
   );
 }
 
+/** Read an address's BNB balance, first responding RPC wins. */
+async function ethGetBalance(address: string): Promise<bigint> {
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "eth_getBalance",
+    params: [address, "latest"],
+  });
+  const hex = await firstSuccess(
+    RPC_URLS.map(async (url) => {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+      if (!res.ok) throw new Error(`rpc http ${res.status}`);
+      const json = (await res.json()) as { result?: unknown };
+      if (typeof json.result !== "string") throw new Error("rpc error");
+      return json.result;
+    }),
+  );
+  try {
+    return BigInt(hex);
+  } catch {
+    return 0n;
+  }
+}
+
+/** Format wei as BNB with up to 4 decimals (0.0001, 0.0123, 1.5). */
+function formatBnb(wei: bigint): string {
+  const whole = wei / 10n ** 18n;
+  const frac = (wei % 10n ** 18n)
+    .toString()
+    .padStart(18, "0")
+    .slice(0, 4)
+    .replace(/0+$/, "");
+  return frac ? `${whole}.${frac}` : `${whole}`;
+}
+
 /** Run calls through Multicall3 in parallel chunks, in call order. */
 async function multicall(calls: { to: string; data: string }[]): Promise<MulticallResult[]> {
   if (calls.length === 0) return [];
@@ -638,6 +678,8 @@ type ScoreEntry = {
 type ScoresData = {
   entries: ScoreEntry[];
   totalPlayers: number;
+  /** Submit fees accumulated in the scores contract (wei). */
+  collectedWei: bigint;
   updatedAt: string;
 };
 
@@ -684,9 +726,11 @@ function decodeScoreEntry(hex: string): {
  *  player's best entry. */
 async function fetchScoresData(): Promise<ScoresData> {
   if (!SCOREBOARD_ADDRESS) throw new Error("scoreboard not deployed");
-  const count = decodeUint(
-    await ethCallTo(SCOREBOARD_ADDRESS, SCORE_SELECTORS.playerCount),
-  );
+  const [countHex, collectedWei] = await Promise.all([
+    ethCallTo(SCOREBOARD_ADDRESS, SCORE_SELECTORS.playerCount),
+    ethGetBalance(SCOREBOARD_ADDRESS),
+  ]);
+  const count = decodeUint(countHex);
   const playerResults = await multicall(
     Array.from({ length: count }, (_, i) => ({
       to: SCOREBOARD_ADDRESS,
@@ -710,7 +754,12 @@ async function fetchScoresData(): Promise<ScoresData> {
       a.updatedAt - b.updatedAt ||
       (a.wallet < b.wallet ? -1 : a.wallet > b.wallet ? 1 : 0),
   );
-  return { entries, totalPlayers: count, updatedAt: new Date().toISOString() };
+  return {
+    entries,
+    totalPlayers: count,
+    collectedWei,
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 /** ABI-encode submitScore(string,uint256,uint256,uint256). The string
@@ -769,7 +818,7 @@ const FAQS = [
   },
   {
     q: "What is the scores board?",
-    a: "A second on-chain board, next to the holders board: player names and best Deep Dive scores, saved on BNB Chain by the players themselves. Only wallets holding a Kryntar Diver can save a score — finish a dive, then save it on-chain from the panel after the game (wallet + a little gas). Only your best score is kept, and the name you save is the name shown.",
+    a: "A second on-chain board, next to the holders board: player names and best Deep Dive scores, saved on BNB Chain by the players themselves. Only wallets holding a Kryntar Diver can save a score — finish a dive, then save it on-chain from the panel after the game (wallet + the 0.0001 BNB submit fee). Only your best score is kept, and the name you save is the name shown. The fee stays in the scores contract for the owner to withdraw.",
   },
   {
     q: "Why can't guests submit scores?",
@@ -886,6 +935,9 @@ function friendlyScoreError(err: unknown): string {
   if (msg.includes("hold a kryntar diver")) {
     return "This wallet holds no Kryntar Diver — on-chain scores are holders only.";
   }
+  if (msg.includes("exact fee")) {
+    return "The save costs exactly 0.0001 BNB — the contract rejected the amount.";
+  }
   if (msg.includes("name 1-24")) {
     return "Diver name must be 1–24 bytes.";
   }
@@ -977,11 +1029,27 @@ function OnChainSubmit({ run, name }: { run: RunResult; name: string }) {
         });
         return;
       }
+      setSt({ status: "busy", message: "Reading the submit fee…" });
+      let feeHex: string;
+      try {
+        const feeRaw = await ethCallTo(
+          SCOREBOARD_ADDRESS,
+          SCORE_SELECTORS.submitFee,
+        );
+        feeHex = "0x" + BigInt(feeRaw).toString(16);
+      } catch {
+        setSt({
+          status: "error",
+          message:
+            "Could not read the submit fee from the contract. Try again in a moment.",
+        });
+        return;
+      }
       setSt({ status: "busy", message: "Confirm in your wallet…" });
       const data = encodeSubmitScore(trimmed, run.score, run.depth, run.gems);
       const hash = (await eth.request({
         method: "eth_sendTransaction",
-        params: [{ from: account, to: SCOREBOARD_ADDRESS, data, value: "0x0" }],
+        params: [{ from: account, to: SCOREBOARD_ADDRESS, data, value: feeHex }],
       })) as string;
       setSt({ status: "sent", txHash: hash });
     } catch (err) {
@@ -1001,7 +1069,8 @@ function OnChainSubmit({ run, name }: { run: RunResult; name: string }) {
         Your best score, your diver name, and this dive&apos;s depth and
         gems — saved forever on BNB Chain, visible to everyone on the
         scores board below. Only wallets holding a Kryntar Diver can save,
-        and only your best score is kept. Costs gas only, no fee.
+        and only your best score is kept. Each save costs 0.0001 BNB,
+        kept in the scores contract, plus a little gas.
       </p>
       <button
         type="button"
@@ -1615,7 +1684,7 @@ function ScoresSection({ wallet }: { wallet: string }) {
       <SectionHead
         kicker="Scores board"
         title="TOP SCORES — ON-CHAIN"
-        intro="Player names and best scores, saved on BNB Chain by the divers themselves — no server, no sign-up. Only wallets holding a Kryntar Diver can save a score, and only each wallet's best is kept. Finish a dive, save it on-chain, and your name climbs. It refreshes every 60 s."
+        intro="Player names and best scores, saved on BNB Chain by the divers themselves — no server, no sign-up. Only wallets holding a Kryntar Diver can save a score, and only each wallet's best is kept. Each save costs 0.0001 BNB, kept in the scores contract. Finish a dive, save it on-chain, and your name climbs. It refreshes every 60 s."
       />
       <div
         className="chunk mt-8 p-2 sm:p-6"
@@ -1637,7 +1706,7 @@ function ScoresSection({ wallet }: { wallet: string }) {
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3 px-2 pt-2 sm:px-0 sm:pt-0">
               <p className="font-mono text-xs text-[var(--dim)]">
                 {data
-                  ? `${data.totalPlayers} ${data.totalPlayers === 1 ? "player" : "players"} · updated ${data.updatedAt.slice(11, 19)} UTC`
+                  ? `${data.totalPlayers} ${data.totalPlayers === 1 ? "player" : "players"} · ${formatBnb(data.collectedWei)} BNB collected · updated ${data.updatedAt.slice(11, 19)} UTC`
                   : "Loading the scores…"}
               </p>
               <button

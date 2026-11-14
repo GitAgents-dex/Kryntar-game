@@ -2,15 +2,19 @@
 pragma solidity ^0.8.26;
 
 /// @title Kryntar Scores — on-chain Deep Dive leaderboard, holders only.
-/// One best entry per wallet. Submitting is gas-only; the caller must hold
-/// at least 1 Kryntar Diver at submit time. Names are 1-24 bytes.
-/// No owner, no fees, no pausing — the board is read straight from chain.
+/// One best entry per wallet. Every submit pays SUBMIT_FEE, which stays
+/// in the contract until the owner (the deployer) withdraws it. The
+/// caller must hold at least 1 Kryntar Diver at submit time. Names are
+/// 1-24 bytes. No pausing — the board is read straight from chain.
 interface IKryntarDiver {
     function balanceOf(address owner) external view returns (uint256);
 }
 
 contract KryntarScores {
     address public immutable nft;
+    address public owner;
+
+    uint256 public constant SUBMIT_FEE = 0.0001 ether;
 
     struct Entry {
         string name;
@@ -32,19 +36,34 @@ contract KryntarScores {
         uint256 gems
     );
 
+    event Withdrawn(address indexed owner, uint256 amount);
+
     constructor(address nft_) {
         require(nft_ != address(0), "NFT address 0");
         nft = nft_;
+        owner = msg.sender;
+    }
+
+    /// @notice Withdraw all accumulated submit fees to the owner.
+    function withdraw() external {
+        require(msg.sender == owner, "Owner only");
+        uint256 bal = address(this).balance;
+        require(bal > 0, "Nothing to withdraw");
+        (bool ok, ) = owner.call{value: bal}("");
+        require(ok, "Withdraw failed");
+        emit Withdrawn(owner, bal);
     }
 
     /// @notice Save a dive. Only the wallet's BEST score is kept; the name
-    /// is always updated to the latest one submitted.
+    /// is always updated to the latest one submitted. Every call pays
+    /// exactly SUBMIT_FEE, which stays in the contract.
     function submitScore(
         string calldata name,
         uint256 score,
         uint256 depth,
         uint256 gems
-    ) external {
+    ) external payable {
+        require(msg.value == SUBMIT_FEE, "Exact fee required");
         require(
             IKryntarDiver(nft).balanceOf(msg.sender) > 0,
             "Hold a Kryntar Diver"
