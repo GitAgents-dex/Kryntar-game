@@ -1,5 +1,36 @@
 # Data Plan
 
+## Edit — BOARD GOES ON-CHAIN (2026-11-14, user: "Ubah board jadi data on-chain")
+
+The leaderboard no longer depends on the server (`getLeaderboard` via
+`./actions`), which cannot run on the static GitHub Pages site — the board
+could never load there, and the game could not even start. The board now
+reads holdings straight from BNB Chain with read-only calls:
+
+- Minting is sequential from fixed pools, so the minted IDs are exactly
+  `standardIdAt(0..S-1)` and `legendaryIdAt(0..L-1)`.
+- Two batched Multicall3 `aggregate` passes (250 calls per chunk, parallel)
+  read every minted ID, then the current owner of every ID.
+- Ranking: Divers held desc, Legendary held desc, earliest mint in pool
+  order, wallet address. The typed wallet in the access panel pins its own
+  row below the top 20 when it ranks lower. Refreshes every 60 s.
+- No event logs: the public BSC endpoints reject `eth_getLogs` ("limit
+  exceeded" even for 10-block ranges), so the board uses `eth_call` only.
+  Verified live: 989 minted / 987 holders, all 989 IDs match the pool order
+  from the contract source, sums reconcile exactly.
+
+The game itself (quotas, submits, scores) still needs the server and stays
+as-is; only the board moved on-chain. The leaderboard FAQ answer was
+rewritten to describe the on-chain board. Removed now-unused code:
+`LbEntry`, `TierBadge`, `formatUtc`, and the `getLeaderboard` call.
+
+
+
+## Edit — SOURCE SYNC TO LIVE CONTRACT (2026-11-14, user: "Perbaiki dan sinkronkan sourcenya")
+- `client/src/App.tsx` in the repo still said the contract was not deployed (stale snapshot), while the published build in `docs/assets/index-kcdhbnw6.js` already mints against the live contract. Source now matches the live build, verified string-by-string against that bundle and re-checked on-chain (mintOpen=true, totalMinted 977/2,222 at sync time).
+- Added: `CONTRACT_ADDRESS` 0xB77D3495d3ed4427dA78c9D0f7Cb76C21c23D9fe, 4 RPC endpoints, contract selectors, live counters (mintOpen/totalMinted/standardMinted/legendaryMinted, 15 s refresh), wallet connect (auto-switch to BNB Chain 56), and real mint buttons for all three lanes with cap + Agent-ID pre-checks and BscScan tx links. Agent prompts replaced with the live one-line prompts naming the contract; FAQ gained "Who can mint for free?" and the mint-open answers now state the mint is live. Deep Forge price corrected 0.001 → 0.0005 BNB everywhere (the 0.001 figure never existed on-chain).
+- `server/src/actions.ts`: header comment only — holder status is still self-declared; on-chain verification is being connected, not active yet. No server behavior changed. `docs/` build output untouched by this sync.
+
 ## Edit — GEMS SECTION COMPACT REDESIGN (2026-11-14, user sent screenshots of the gem cards + "Bagysnya ini digimanai supaya bergubs")
 User found the gem cards too tall/empty on phone (small thumbnail + long dashed TYPE/FOUND AT/SCORE/DROP RATE rows + big rarity boxes = very long scroll for just 4 gems). Section `#collection` (THE KRYN GEMS) rebuilt compact & visual, **all numbers unchanged** (Pale 10–99 / 0–300 m / +10 / ~45%; Cracked 100–299 / 300–900 m / +20 / ~27%; Ember 300–699 / 900–1,800 m / +30 / ~18%; Heart 700–999 / 900 m and deeper / +50 / ~10% deep only):
 - **Cards**: grid 2 columns on phone, 4 in a row on desktop (`grid-cols-2 lg:grid-cols-4`). Each card top→bottom: full-width pixel gem image (the star, with a same-color drop-shadow glow), K-id + type label in the gem's accent color, name, POWER badge (orange numbers as before), 3 mini stat chips (▼ depth found / +N × layer score / ~N% drops), one short sentence. The long dashed trait rows are gone.
