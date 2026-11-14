@@ -3680,6 +3680,14 @@ export function App() {
           <p className="mx-auto mt-3 max-w-md text-sm text-[var(--dim)]">
             The surface is free. The depth is earned. Dive safe.
           </p>
+          <a
+            href="https://x.com/kryntar"
+            target="_blank"
+            rel="noreferrer"
+            className="mt-4 inline-block font-mono text-xs font-bold uppercase tracking-[0.15em] text-[#FF8A3D] underline underline-offset-4 transition-colors hover:text-[var(--text)]"
+          >
+            Follow Kryntar on X
+          </a>
           <div className="core-line mx-auto mt-6 h-0.5 w-40 opacity-60" aria-hidden="true" />
         </footer>
       </main>
