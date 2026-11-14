@@ -1,5 +1,32 @@
 # Data Plan
 
+## Edit — $KRYN TOKEN + HOLDER CLAIM CONTRACTS (2026-11-14, user approved the token design draft)
+
+Kryn ($KRYN) is the Kryntar Divers game token. Total supply 222,222,222
+(18 decimals), fixed at deploy, no owner, no mint, no tax. Split approved
+by the user: 50% rewards (holder claim + seasonal score pool), 45%
+liquidity, 5% owner. `contract/KrynToken.sol` is a minimal self-contained
+ERC20; the full supply mints to the deployer, who distributes it.
+
+`contract/KrynClaim.sol` pays the holder claim: 25,000 $KRYN once per
+Diver, to whoever holds that token ID at claim time, for an exact
+0.0001 BNB fee per claim. Fees accumulate in the contract; the owner
+withdraws them with withdraw(). The claim contract must be funded with
+exactly 55,550,000 $KRYN (25,000 x 2,222) — it has no token rescue
+function, so overfunding would strand tokens. Seasonal score rewards
+(55,561,111 $KRYN, pro-rata by on-chain best score) have no distributor
+contract yet; the pool stays with the deployer until seasons are built.
+The local gem bank is device-local and unverifiable, so it never
+converts directly — on-chain scores are the proof of play.
+
+Both contracts compile with solc 0.8.38 (optimizer runs 200, EVM
+shanghai) and pass 36/36 ganache + ethers tests (`contract/test-token.js`).
+`docs/kryntar-token-deploy.html` deploys token + claim and funds the
+claim in 3 wallet transactions, with post-deploy checks; its embedded
+artifacts are verified byte-exact against the compiled JSON
+(`contract/verify-token-deploy-page.js`). NOT DEPLOYED YET — the user
+deploys from kryntar.xyz, and the BNB pairing amount is still undecided.
+
 ## Edit — SCORES BOARD WIRED TO LIVE CONTRACT (2026-11-14, user deployed + sent address)
 
 KryntarScores is deployed on BNB Chain at
