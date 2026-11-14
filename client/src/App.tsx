@@ -252,6 +252,22 @@ const SCORE_SELECTORS = {
 };
 
 const STANDARD_POOL_SIZE = 2111;
+
+/** $KRYN — the Kryntar token — and its holder-claim contract, both live
+ *  on BNB Chain (chainId 56). Never put a fake address here. */
+const KRYN_TOKEN_ADDRESS = "0x651a15460F62dF9d9B77ea0324fc948F6b94b5fA";
+const KRYN_CLAIM_ADDRESS = "0xF423486D0B021E457c0132b3144728DEa105f028";
+
+/** Function selectors of the KrynClaim contract (see
+ *  contract/KrynClaim.sol). balanceOf is the token contract's. */
+const CLAIM_SELECTORS = {
+  claim: "0x379607f5",
+  claimed: "0xdbe7e3bd",
+  claimedCount: "0xc08fa1a4",
+  reward: "0xcab34c08",
+  claimFee: "0xe41e4fc6",
+  balanceOf: "0x70a08231",
+};
 const LEGENDARY_POOL_SIZE = 111;
 const FREE_CAP = 1;
 const DEEP_CAP = 5;
@@ -785,6 +801,128 @@ function encodeSubmitScore(
   );
 }
 
+/* ------------------------ $KRYN holder claim ------------------------- */
+
+type ClaimInfo = {
+  /** $KRYN per Diver, in token base units (18 decimals). */
+  reward: bigint;
+  /** Exact claim fee in wei. */
+  fee: bigint;
+  claimedCount: number;
+  /** $KRYN left in the claim contract, in token base units. */
+  pool: bigint;
+  updatedAt: string;
+};
+
+/** Format a token amount with 18 decimals as whole $KRYN with commas
+ *  (rewards and pools are whole $KRYN). */
+function formatKryn(amount: bigint): string {
+  return (amount / 10n ** 18n).toLocaleString("en-US");
+}
+
+/** Read the live claim numbers from the chain: reward, fee, how many
+ *  Divers already claimed, and what is left in the claim pool. */
+async function fetchClaimInfo(): Promise<ClaimInfo> {
+  const [rewardHex, feeHex, countHex, poolHex] = await Promise.all([
+    ethCallTo(KRYN_CLAIM_ADDRESS, CLAIM_SELECTORS.reward),
+    ethCallTo(KRYN_CLAIM_ADDRESS, CLAIM_SELECTORS.claimFee),
+    ethCallTo(KRYN_CLAIM_ADDRESS, CLAIM_SELECTORS.claimedCount),
+    ethCallTo(
+      KRYN_TOKEN_ADDRESS,
+      encodeAddressArg(CLAIM_SELECTORS.balanceOf, KRYN_CLAIM_ADDRESS),
+    ),
+  ]);
+  return {
+    reward: BigInt(rewardHex),
+    fee: BigInt(feeHex),
+    claimedCount: decodeUint(countHex),
+    pool: BigInt(poolHex),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+type OwnedDiver = { id: number; legendary: boolean; claimed: boolean };
+
+/** Find every Diver the wallet holds, with its claim state. Mirrors the
+ *  holder board's enumeration: minted IDs in pool order, then the
+ *  current owner of every ID, then one claimed() read per owned ID. */
+async function fetchOwnedDivers(wallet: string): Promise<OwnedDiver[]> {
+  const [standardHex, legendaryHex] = await Promise.all([
+    ethCall(SELECTORS.standardMinted),
+    ethCall(SELECTORS.legendaryMinted),
+  ]);
+  const standardCount = decodeUint(standardHex);
+  const legendaryCount = decodeUint(legendaryHex);
+
+  const idCalls: { to: string; data: string }[] = [];
+  for (let i = 0; i < standardCount; i++) {
+    idCalls.push({ to: CONTRACT_ADDRESS, data: encodeUintCall(SELECTORS.standardIdAt, i) });
+  }
+  for (let i = 0; i < legendaryCount; i++) {
+    idCalls.push({ to: CONTRACT_ADDRESS, data: encodeUintCall(SELECTORS.legendaryIdAt, i) });
+  }
+  const idResults = await multicall(idCalls);
+  const ids: { id: number; legendary: boolean }[] = [];
+  idResults.forEach((data, i) => {
+    ids.push({ id: Number(BigInt(data)), legendary: i >= standardCount });
+  });
+
+  const ownerResults = await multicall(
+    ids.map(({ id }) => ({ to: CONTRACT_ADDRESS, data: encodeUintCall(SELECTORS.ownerOf, id) })),
+  );
+  const mine = wallet.toLowerCase();
+  const owned: { id: number; legendary: boolean }[] = [];
+  ownerResults.forEach((data, i) => {
+    const entry = ids[i];
+    if (entry && ("0x" + data.slice(-40)).toLowerCase() === mine) {
+      owned.push(entry);
+    }
+  });
+
+  const claimedResults = await multicall(
+    owned.map(({ id }) => ({
+      to: KRYN_CLAIM_ADDRESS,
+      data: encodeUintCall(CLAIM_SELECTORS.claimed, id),
+    })),
+  );
+  return owned.map((o, i) => ({
+    ...o,
+    claimed: decodeBool(claimedResults[i] ?? "0x"),
+  }));
+}
+
+/** Turn a wallet/contract failure into one plain sentence for the claimer. */
+function friendlyClaimError(err: unknown, id: number): string {
+  const msg = errorMessage(err).toLowerCase();
+  if (
+    errorCode(err) === 4001 ||
+    msg.includes("user rejected") ||
+    msg.includes("user denied")
+  ) {
+    return "You rejected the transaction in your wallet — nothing was claimed.";
+  }
+  if (msg.includes("alreadyclaimed") || msg.includes("already claimed")) {
+    return `Diver #${id} already claimed its $KRYN — one claim per NFT.`;
+  }
+  if (msg.includes("notholder") || msg.includes("not holder")) {
+    return `This wallet no longer holds Diver #${id} — only the current holder can claim.`;
+  }
+  if (msg.includes("incorrectfee") || msg.includes("exact fee")) {
+    return "The claim costs exactly the fee shown above — the contract rejected the amount.";
+  }
+  if (msg.includes("insufficient funds")) {
+    return "Not enough BNB in this wallet to cover the claim fee plus gas.";
+  }
+  return "The transaction failed — nothing was claimed. Check your wallet and try again.";
+}
+
+/** Simple direct-execute agent prompt for claiming one Diver's $KRYN.
+ *  No domain names, ever. The fee is the live value read from the
+ *  contract at copy time. */
+function claimPromptFor(id: number, feeWei: bigint): string {
+  return `Claim $KRYN for Diver #${id} on BNB Chain (chainId 56). Claim contract: ${KRYN_CLAIM_ADDRESS}.\nCheck claimed(${id}) is false and this wallet holds Diver #${id}. If already claimed or not held, STOP and report to me.\nCall claim(${id}) and pay exactly ${feeWei.toString()} wei.\nExecute once, then send me the transaction hash.`;
+}
+
 /* ---------------------------- agent prompts ------------------------------ */
 
 const AGENT_PROMPT_FREE = `Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: ${CONTRACT_ADDRESS}. Call mintFree() and pay exactly 0 BNB (0 wei). You must hold a Binance Agent ID in this wallet (free lane is Agent-ID gated). If mintOpen() returns false, STOP and report to me. Execute once, then send me the transaction hash.`;
@@ -830,7 +968,7 @@ const FAQS = [
   },
   {
     q: "Can I swap my gems for the token now?",
-    a: "Not yet. The Kryntar token is not launched. The plan: gems you collect and submit with your score will be exchangeable for the token after it launches. No rate is set yet, and the swap is not active today.",
+    a: "No — gems saved on this device cannot be swapped. They are local and unverifiable. The $KRYN token is live: every Diver holder claims a fixed $KRYN reward per NFT, once, from the Claim section (a small BNB fee applies, read live from the contract). On-chain scores are planned to earn from seasonal reward pools later.",
   },
   {
     q: "Is there a prize pool?",
@@ -1239,8 +1377,7 @@ function SaveDiveForm({
         {run.counts.pale} · Cracked × {run.counts.cracked} · Ember ×{" "}
         {run.counts.ember} · Heart × {run.counts.heart}). Submit it and the
         score goes on the online leaderboard for everyone to see, and the
-        gems land in My Gems below — the saved gems are the ones that count
-        later, when the gem-to-token swap opens.
+        gems land in My Gems below.
       </p>
       <div className="mt-4 flex flex-col gap-3 sm:flex-row">
         <label className="flex-1 text-sm">
@@ -1760,6 +1897,425 @@ function ScoresSection({ wallet }: { wallet: string }) {
                 No score saved by “{wallet.trim()}” yet — finish a dive and
                 save it on-chain to take your place on the board.
               </p>
+            )}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------ claim section ---------------------------- */
+
+type ClaimRowStatus =
+  | { status: "idle" }
+  | { status: "pending"; message: string }
+  | { status: "error"; message: string }
+  | { status: "success"; message: string; txHash: string };
+
+/** $KRYN holder claim: connect, see every Diver the wallet holds with its
+ *  claim state, and claim the fixed $KRYN reward per unclaimed Diver.
+ *  Reward and fee are read live from the claim contract, never hardcoded. */
+function ClaimSection() {
+  const [account, setAccount] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [owned, setOwned] = useState<OwnedDiver[] | null>(null);
+  const [ownedLoading, setOwnedLoading] = useState(false);
+  const [ownedError, setOwnedError] = useState(false);
+  const [claimingId, setClaimingId] = useState<number | null>(null);
+  const [rowStatus, setRowStatus] = useState<Record<number, ClaimRowStatus>>({});
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+  const accountRef = useRef<string | null>(null);
+  accountRef.current = account;
+
+  const info = useQuery({
+    queryKey: ["kryn-claim-info"],
+    queryFn: fetchClaimInfo,
+    refetchInterval: 60_000,
+  });
+
+  const loadOwned = async (wallet: string) => {
+    setOwnedLoading(true);
+    setOwnedError(false);
+    try {
+      setOwned(await fetchOwnedDivers(wallet));
+    } catch {
+      setOwnedError(true);
+    } finally {
+      setOwnedLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!account) {
+      setOwned(null);
+      return;
+    }
+    void loadOwned(account);
+  }, [account]);
+
+  useEffect(() => {
+    const provider = getEthereum();
+    if (!provider || !provider.on) return;
+    const handler = (...args: unknown[]) => {
+      const accounts = args[0];
+      if (Array.isArray(accounts) && typeof accounts[0] === "string") {
+        setAccount(accounts[0]);
+      } else {
+        setAccount(null);
+      }
+    };
+    provider.on("accountsChanged", handler);
+    return () => {
+      provider.removeListener?.("accountsChanged", handler);
+    };
+  }, []);
+
+  const setRow = (id: number, next: ClaimRowStatus) =>
+    setRowStatus((prev) => ({ ...prev, [id]: next }));
+
+  const connect = async () => {
+    const provider = getEthereum();
+    if (!provider) {
+      setConnectError(
+        "No wallet found in this browser. Open this page inside a wallet browser (MetaMask, Trust Wallet, Binance Wallet…) — or claim with an agent using the prompt on an unclaimed Diver below.",
+      );
+      return;
+    }
+    setConnecting(true);
+    setConnectError(null);
+    try {
+      const accounts = (await provider.request({ method: "eth_requestAccounts" })) as unknown;
+      if (!Array.isArray(accounts) || typeof accounts[0] !== "string") {
+        throw new Error("no account returned");
+      }
+      if ((await provider.request({ method: "eth_chainId" })) !== "0x38") {
+        try {
+          await provider.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: "0x38" }],
+          });
+        } catch (switchErr) {
+          if (errorCode(switchErr) === 4902) {
+            await provider.request({
+              method: "wallet_addEthereumChain",
+              params: [
+                {
+                  chainId: "0x38",
+                  chainName: "BNB Smart Chain",
+                  nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 },
+                  rpcUrls: ["https://bsc-dataseed.binance.org"],
+                  blockExplorerUrls: ["https://bscscan.com"],
+                },
+              ],
+            });
+          } else {
+            throw switchErr;
+          }
+        }
+      }
+      setAccount(accounts[0]);
+    } catch (err) {
+      setConnectError(
+        errorCode(err) === 4001
+          ? "Wallet connection was rejected — approve it in your wallet to claim here."
+          : "Could not connect the wallet. Check it is unlocked and on BNB Chain, then try again.",
+      );
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const claim = async (id: number) => {
+    const wallet = accountRef.current;
+    if (!wallet || claimingId !== null) return;
+    setClaimingId(id);
+    setRow(id, { status: "pending", message: "Reading the claim fee…" });
+    try {
+      let feeHex: string;
+      try {
+        const feeRaw = await ethCallTo(KRYN_CLAIM_ADDRESS, CLAIM_SELECTORS.claimFee);
+        feeHex = "0x" + BigInt(feeRaw).toString(16);
+      } catch {
+        setRow(id, {
+          status: "error",
+          message: "Could not read the claim fee from the contract. Try again in a moment.",
+        });
+        return;
+      }
+      const provider = getEthereum();
+      if (!provider) throw new Error("wallet disappeared");
+      if ((await provider.request({ method: "eth_chainId" })) !== "0x38") {
+        try {
+          await provider.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: "0x38" }],
+          });
+        } catch {
+          setRow(id, {
+            status: "error",
+            message: "Switch your wallet to BNB Chain (chainId 56) and try again.",
+          });
+          return;
+        }
+      }
+      setRow(id, { status: "pending", message: "Confirm the transaction in your wallet…" });
+      const txHash = (await provider.request({
+        method: "eth_sendTransaction",
+        params: [
+          {
+            from: wallet,
+            to: KRYN_CLAIM_ADDRESS,
+            data: encodeUintCall(CLAIM_SELECTORS.claim, id),
+            value: feeHex,
+          },
+        ],
+      })) as string;
+      setRow(id, {
+        status: "success",
+        message: "Claim sent — your $KRYN is on its way.",
+        txHash,
+      });
+      setOwned((prev) =>
+        prev ? prev.map((o) => (o.id === id ? { ...o, claimed: true } : o)) : prev,
+      );
+      void info.refetch();
+      // Re-read claim states once the transaction has had time to confirm,
+      // so a reverted claim shows as unclaimed again.
+      setTimeout(() => {
+        if (accountRef.current) void loadOwned(accountRef.current);
+      }, 8000);
+    } catch (err) {
+      setRow(id, { status: "error", message: friendlyClaimError(err, id) });
+    } finally {
+      setClaimingId(null);
+    }
+  };
+
+  const copyPrompt = async (id: number) => {
+    const fee = info.data?.fee;
+    if (fee === undefined) return;
+    const text = claimPromptFor(id, fee);
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setCopiedId(id);
+    setTimeout(() => setCopiedId((cur) => (cur === id ? null : cur)), 2000);
+  };
+
+  const data = info.data;
+  const unclaimedCount = owned ? owned.filter((o) => !o.claimed).length : 0;
+
+  return (
+    <section id="claim" className="scroll-mt-24 pt-20">
+      <SectionHead
+        kicker="The Token"
+        title="CLAIM $KRYN — HOLDERS ONLY"
+        intro="The $KRYN token is live on BNB Chain. Every Diver holds one claim: a fixed $KRYN reward per NFT, once, for whoever holds the Diver right now. Connect your wallet, see your Divers, and claim each one. The reward and the fee below are read live from the claim contract — the fee stays in the contract for the owner to withdraw."
+      />
+      <div
+        className="chunk mt-8 p-2 sm:p-6"
+        style={{ "--chunk-shadow": "#C97B2D" } as CSSProperties}
+      >
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 px-2 pt-2 sm:px-0 sm:pt-0">
+          <p className="font-mono text-xs text-[var(--dim)]">
+            {data
+              ? `Reward ${formatKryn(data.reward)} $KRYN per Diver · fee ${formatBnb(data.fee)} BNB · ${data.claimedCount.toLocaleString("en-US")} / 2,222 claimed · ${formatKryn(data.pool)} $KRYN left in the pool · updated ${data.updatedAt.slice(11, 19)} UTC`
+              : "Reading the claim contract…"}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              void info.refetch();
+              if (account) void loadOwned(account);
+            }}
+            disabled={info.isFetching || ownedLoading}
+            className="chunk-sm bg-transparent px-4 py-2 font-mono text-xs font-bold uppercase tracking-[0.15em] text-[var(--text)] disabled:opacity-40"
+            style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+          >
+            {info.isFetching || ownedLoading ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
+
+        {info.isError && (
+          <p className="px-2 font-mono text-xs text-[#FF8A3D]" role="alert">
+            The claim contract could not be read. Press Refresh to try again.
+          </p>
+        )}
+
+        <div className="mx-2 mb-4 border-2 border-[#201E1A] bg-[#070708] p-3 sm:mx-0 sm:p-4">
+          <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--dim)]">
+            $KRYN token — BNB Chain (chainId 56)
+          </p>
+          <p className="mt-1 break-all font-mono text-sm font-bold leading-relaxed">
+            {KRYN_TOKEN_ADDRESS}{" "}
+            <a
+              className="font-normal text-[#FF8A3D] underline"
+              href={`https://bscscan.com/address/${KRYN_TOKEN_ADDRESS}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              BscScan ↗
+            </a>
+          </p>
+          <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--dim)]">
+            Claim contract
+          </p>
+          <p className="mt-1 break-all font-mono text-sm font-bold leading-relaxed">
+            {KRYN_CLAIM_ADDRESS}{" "}
+            <a
+              className="font-normal text-[#FF8A3D] underline"
+              href={`https://bscscan.com/address/${KRYN_CLAIM_ADDRESS}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              BscScan ↗
+            </a>
+          </p>
+        </div>
+
+        {!account ? (
+          <div className="mx-2 border-2 border-[#201E1A] bg-[#070708] p-3 sm:mx-0 sm:p-4">
+            <button
+              type="button"
+              onClick={() => void connect()}
+              disabled={connecting}
+              aria-label="Connect your wallet to claim $KRYN"
+              className="chunk-sm w-full bg-[#FF8A3D] px-5 py-3 font-mono text-sm font-bold uppercase tracking-[0.15em] text-[#070708] disabled:opacity-60 sm:w-auto"
+              style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+            >
+              {connecting ? "Connecting…" : "Connect wallet to claim"}
+            </button>
+            <p className="mt-2 font-mono text-[11px] uppercase tracking-[0.15em] text-[var(--dim)]">
+              Switches to BNB Chain (chainId 56) automatically
+            </p>
+            {connectError && (
+              <p className="mt-3 font-mono text-xs font-bold leading-relaxed text-[#FF7A59]" role="alert">
+                {connectError}
+              </p>
+            )}
+          </div>
+        ) : (
+          <>
+            <p className="px-2 font-mono text-sm leading-relaxed sm:px-0">
+              <span className="text-[11px] uppercase tracking-[0.2em] text-[var(--dim)]">
+                Wallet connected{" "}
+              </span>
+              <strong className="break-all">{account}</strong>{" "}
+              <span className="text-[var(--dim)]">(BNB Chain)</span>
+            </p>
+
+            {ownedLoading && !owned && (
+              <p className="px-2 py-6 text-center font-mono text-sm text-[var(--dim)]" role="status" >
+                Reading your Divers from the chain…
+              </p>
+            )}
+
+            {ownedError && (
+              <p className="px-2 py-4 font-mono text-xs text-[#FF8A3D]" role="alert">
+                Your Divers could not be read. Press Refresh to try again.
+              </p>
+            )}
+
+            {owned && owned.length === 0 && (
+              <p className="px-2 py-6 text-center font-mono text-sm text-[var(--dim)]" role="status">
+                No Divers in this wallet yet —{" "}
+                <a href="#mint" className="font-bold text-[#FF8A3D] underline">
+                  mint one
+                </a>{" "}
+                to claim $KRYN.
+              </p>
+            )}
+
+            {owned && owned.length > 0 && unclaimedCount === 0 && (
+              <p className="px-2 py-4 font-mono text-sm text-[var(--dim)]" role="status">
+                All {owned.length} of your {owned.length === 1 ? "Diver has" : "Divers have"} already
+                claimed — nothing left to claim.
+              </p>
+            )}
+
+            {owned && owned.length > 0 && (
+              <ol className="mt-4 divide-y divide-[#201E1A] border-2 border-[#201E1A] bg-[#0B0B0C]">
+                {owned.map((o) => {
+                  const st = rowStatus[o.id] ?? { status: "idle" };
+                  return (
+                    <li key={o.id} className="px-4 py-3">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                        <span className="font-mono text-base font-bold">Diver #{o.id}</span>
+                        {o.legendary && (
+                          <span className="bg-[#FFC46B] px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.15em] text-[#070708]">
+                            Legendary
+                          </span>
+                        )}
+                        <span className="min-w-0 flex-1" />
+                        {o.claimed ? (
+                          <span className="font-mono text-xs font-bold text-[#9BE08A]">
+                            CLAIMED ✓
+                          </span>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void claim(o.id)}
+                              disabled={claimingId !== null || !data}
+                              aria-label={`Claim $KRYN for Diver ${o.id}`}
+                              className="chunk-sm bg-[#FF8A3D] px-4 py-2 font-mono text-xs font-bold uppercase tracking-[0.15em] text-[#070708] disabled:opacity-40"
+                              style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+                            >
+                              {claimingId === o.id
+                                ? "Claiming…"
+                                : data
+                                  ? `Claim ${formatKryn(data.reward)} $KRYN`
+                                  : "Claim $KRYN"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void copyPrompt(o.id)}
+                              disabled={!data}
+                              aria-label={`Copy the agent prompt to claim $KRYN for Diver ${o.id}`}
+                              className="chunk-sm border-2 border-[#3D382E] px-4 py-2 font-mono text-xs font-bold uppercase tracking-[0.15em] text-[var(--text)] disabled:opacity-40"
+                              style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+                            >
+                              {copiedId === o.id ? "Copied ✓" : "Copy agent prompt"}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                      {st.status === "pending" && (
+                        <p className="mt-2 font-mono text-xs leading-relaxed text-[var(--dim)]" role="status">
+                          {st.message}
+                        </p>
+                      )}
+                      {st.status === "error" && (
+                        <p className="mt-2 font-mono text-xs font-bold leading-relaxed text-[#FF7A59]" role="alert">
+                          {st.message}
+                        </p>
+                      )}
+                      {st.status === "success" && (
+                        <p className="mt-2 font-mono text-xs leading-relaxed text-[#9BE08A]" role="status">
+                          {st.message}{" "}
+                          <a
+                            href={`https://bscscan.com/tx/${st.txHash}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-bold text-[#FFC46B] underline underline-offset-2"
+                          >
+                            Tx {shortAddress(st.txHash)} ↗
+                          </a>
+                        </p>
+                      )}
+                    </li>
+                  );
+                })}
+              </ol>
             )}
           </>
         )}
@@ -2444,6 +3000,7 @@ export function App() {
             <a className={navLink} href="#game">Game</a>
             <a className={navLink} href="#board">Board</a>
             <a className={navLink} href="#scores">Scores</a>
+            <a className={navLink} href="#claim">Claim</a>
             <a className={navLink} href="#world">World</a>
             <a className={navLink} href="#collection">Gems</a>
             <a className={navLink} href="#divers">Divers</a>
@@ -2468,8 +3025,8 @@ export function App() {
             Kryn is a gem that only forms deep underground, under extreme
             pressure. Play the dive game, collect Kryn gems on the way down,
             and save your gems. The deeper you go, the more every gem is
-            worth — and the gems you save are planned to swap for the Kryntar
-            token later.
+            worth — and Diver holders claim the $KRYN token, one claim per
+            Diver, in the Claim section below.
           </p>
 
           <dl className="chunk mt-8 grid grid-cols-2 gap-px bg-black font-mono lg:grid-cols-4" style={{ "--chunk-shadow": "#C97B2D" } as CSSProperties}>
@@ -2477,7 +3034,7 @@ export function App() {
               ["PLAY", "Unlimited practice dives"],
               ["ONE DIVE", "60 seconds · 3 oxygen"],
               ["GEMS", "4 types · deeper = rarer"],
-              ["TOKEN", "Not launched yet"],
+              ["TOKEN", "$KRYN live — claim per Diver"],
             ].map(([k, v]) => (
               <div key={k} className="bg-[#0B0B0C] px-4 py-3">
                 <dt className="text-[10px] tracking-[0.22em] text-[var(--dim)]">{k}</dt>
@@ -2628,12 +3185,12 @@ export function App() {
               </ul>
               <div className="core-line mt-4 h-0.5 w-full opacity-70" aria-hidden="true" />
               <p className="mt-4 text-sm leading-relaxed text-[var(--dim)]">
-                <strong className="text-[var(--text)]">Gems → token, later.</strong>{" "}
-                The plan: when the Kryntar token launches, saved gems will be
-                exchangeable for the token. The token is{" "}
-                <strong className="text-[var(--text)]">not launched yet</strong>, the
-                swap is <strong className="text-[var(--text)]">not active</strong>,
-                and no exchange rate is set. For now: dive, collect, save.
+                <strong className="text-[var(--text)]">Gems do not convert to the token.</strong>{" "}
+                The $KRYN token is live, but gems saved on this device stay
+                here — they are local and cannot be verified. $KRYN is
+                claimed by holding a Diver, one claim per NFT, in the Claim
+                section below; on-chain scores are planned to earn from
+                seasonal reward pools later.
               </p>
             </div>
           </div>
@@ -2641,6 +3198,7 @@ export function App() {
 
         <LeaderboardSection wallet={playerWallet} />
         <ScoresSection wallet={playerWallet} />
+        <ClaimSection />
 
         {/* -------------------------------- world ------------------------------ */}
         <section id="world" className="scroll-mt-24 pt-20">
