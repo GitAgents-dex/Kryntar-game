@@ -1,5 +1,49 @@
 # Data Plan
 
+## Edit — ON-CHAIN SCORES BOARD, HOLDERS ONLY (2026-11-14, user: "On-chain, holder only")
+
+Player names + scores now have a shared home that needs no server: a new
+KryntarScores contract (`contract/KryntarScores.sol`). The user chose the
+on-chain path over a free database or self-hosting, after asking why the
+game's server was "replaced" — it was not: the server code is untouched,
+but kryntar.xyz is static GitHub Pages with no server behind it, so the
+game could never reach it. The scores contract is the shared store the
+static site was missing.
+
+- Contract: one best entry per wallet (name 1-24 bytes, score, depth,
+  gems, updatedAt). `submitScore()` requires holding >=1 Kryntar Diver at
+  submit time (balanceOf on 0xB77D...D9fe), gas only, no fees, no owner.
+  A lower score keeps the best but still updates the name. Players are
+  enumerable (`playerCount`/`playerAt`/`entryOf`/`isPlayer`) for
+  Multicall3 reads. Tests: 19/19 pass (ganache + ethers,
+  `test-scores.js`; MockRegistry reused as the holder mock, since all
+  the contract reads from the NFT is balanceOf). NOTE: ganache's
+  eth_estimateGas sees stale state after a reverted estimation, so the
+  real submits in the tests use an explicit gas limit — the contract
+  itself is fine (verified via eth_call + mined txs).
+- Deploy: standalone deploy page (kryntar-scores-deploy.html, delivered
+  to the user, NOT in the repo) embeds the compiled artifact byte-exact
+  (solc 0.8.38, optimizer runs 200, evmVersion shanghai); NFT address
+  prefilled + readonly; post-deploy checks `nft()` + `playerCount()`.
+  The user deploys with their own wallet + BNB.
+- Web (`client/src/App.tsx`): `SCOREBOARD_ADDRESS` is EMPTY until the
+  contract deploys — no fake address. While empty, the new #scores
+  section shows a "not deployed yet" note and no submit card appears.
+  Once set: ScoresSection reads playerCount -> playerAt -> entryOf in
+  two Multicall3 passes (same helpers as the holders board), ranks by
+  score desc / earliest best / wallet, top 20 + own-wallet pin, 60 s
+  refresh; OnChainSubmit (in SaveDiveForm, all three branches) connects
+  the wallet, checks the real holder balance, and sends submitScore
+  with a hand-rolled ABI encoder verified byte-identical to ethers'
+  AbiCoder (5 cases incl. multibyte names) and a decoder verified
+  against live ganache returndata. FAQ gained "What is the scores
+  board?"; guest/wallet answers updated (on-chain submit checks the
+  wallet, not the access-panel tier).
+- Verified: `tsc --noEmit` clean (client + server, strict); encoder +
+  decoder byte-checked against ethers/ganache; bundle contains the new
+  strings (selectors 0x036e2294/0x302bcc57/0x8f828470/0x58bb388a) and
+  the full-package strings; docs/ rebuilt (index-w0az8cax.js).
+
 ## Edit — DEEP DIVE FULL PACKAGE (2026-11-14, user: "Paket lengkap + aksi, event & suara")
 
 The game was unplayable on the static site: START DIVE asked the server
