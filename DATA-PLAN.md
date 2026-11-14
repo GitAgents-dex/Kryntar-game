@@ -1,5 +1,20 @@
 # Data Plan
 
+## Edit — SHARE BUTTONS + AGENTS BLOCK + DISCOVERY FILES (2026-11-14, growth: paid mints + $KRYN claims)
+
+Share on X buttons (plain twitter.com/intent/tweet links, prefilled text +
+site URL, no tracking) in the Mint section and the Claim section. The
+"MINT WITH AN AGENT" block becomes the AGENTS block: the three mint prompts
+are rewritten as simple direct-execute 4-line prompts (contract address +
+function + exact wei, no domains), and a fourth card adds the generic claim
+prompt (claim(<ID>), 100000000000000 wei, <ID> placeholder) with its own
+steps. PromptCard takes an optional steps prop. New static files at docs/
+root: robots.txt (allow all, no sitemap exists), llms.txt and agents.txt
+(short plain-text descriptions of Kryntar with the mint lanes, the claim,
+all contract addresses, and the same 4-line prompts; the files name the
+site once, the prompts contain no domains). agent.json untouched
+(active:false). No new dependencies, no CDN, no contract changes.
+
 ## Edit — $KRYN HOLDER CLAIM WIRED INTO THE SITE (2026-11-14, token + claim deployed by the user, addresses verified on-chain)
 
 $KRYN (0x651a15460F62dF9d9B77ea0324fc948F6b94b5fA) and KrynClaim

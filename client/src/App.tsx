@@ -925,11 +925,16 @@ function claimPromptFor(id: number, feeWei: bigint): string {
 
 /* ---------------------------- agent prompts ------------------------------ */
 
-const AGENT_PROMPT_FREE = `Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: ${CONTRACT_ADDRESS}. Call mintFree() and pay exactly 0 BNB (0 wei). You must hold a Binance Agent ID in this wallet (free lane is Agent-ID gated). If mintOpen() returns false, STOP and report to me. Execute once, then send me the transaction hash.`;
+/** Simple direct-execute agent prompts: exactly 4 lines each, contract
+ *  address + function + value only. No domain names, ever. The claim
+ *  prompt uses <ID> as the Diver number placeholder. */
+const AGENT_PROMPT_FREE = `Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: ${CONTRACT_ADDRESS}.\nCheck mintOpen() is true and this wallet holds a Binance Agent ID. If the mint is closed or there is no Agent ID, STOP and report to me.\nCall mintFree() and pay exactly 0 wei.\nExecute once, then send me the transaction hash.`;
 
-const AGENT_PROMPT_LEGENDARY = `Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: ${CONTRACT_ADDRESS}. Call mintLegendary() and pay exactly 0.01 BNB (10000000000000000 wei) — guaranteed Legendary. If mintOpen() returns false, STOP and report to me. Execute once, then send me the transaction hash.`;
+const AGENT_PROMPT_DEEP = `Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: ${CONTRACT_ADDRESS}.\nCheck mintOpen() is true. If the mint is closed, STOP and report to me.\nCall mintDeep() and pay exactly 500000000000000 wei.\nExecute once, then send me the transaction hash.`;
 
-const AGENT_PROMPT_DEEP = `Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: ${CONTRACT_ADDRESS}. Call mintDeep() and pay exactly 0.0005 BNB (500000000000000 wei). If mintOpen() returns false, STOP and report to me. Execute once, then send me the transaction hash.`;
+const AGENT_PROMPT_LEGENDARY = `Mint 1 Kryntar Diver on BNB Chain (chainId 56). Contract: ${CONTRACT_ADDRESS}.\nCheck mintOpen() is true. If the mint is closed, STOP and report to me.\nCall mintLegendary() and pay exactly 10000000000000000 wei — guaranteed Legendary.\nExecute once, then send me the transaction hash.`;
+
+const AGENT_PROMPT_CLAIM = `Claim $KRYN for Diver #<ID> on BNB Chain (chainId 56). Claim contract: ${KRYN_CLAIM_ADDRESS}.\nReplace <ID> with the Diver number. Check claimed(<ID>) is false and this wallet holds Diver #<ID>. If already claimed or not held, STOP and report to me.\nCall claim(<ID>) and pay exactly 100000000000000 wei.\nExecute once, then send me the transaction hash.`;
 
 /* ---------------------------------- faq ---------------------------------- */
 
@@ -1013,6 +1018,31 @@ function SectionHead({
         <p className="mt-4 max-w-2xl leading-relaxed text-[var(--dim)]">{intro}</p>
       )}
     </div>
+  );
+}
+
+/* ------------------------------ share on X ------------------------------- */
+
+/** Prefilled share texts. Short, factual, no price or income promises. */
+const SHARE_TEXT_MINT =
+  "Mint a Kryntar Diver on BNB Chain — free with a Binance Agent ID, or go Deep / Legendary. Every Diver holds a 25,000 $KRYN claim.";
+const SHARE_TEXT_CLAIM =
+  "$KRYN claim is live — 25,000 $KRYN per Kryntar Diver, once per NFT. Fee 0.0001 BNB.";
+
+/** Plain X intent link — no tracking scripts, opens in a new tab. */
+function ShareOnXButton({ text, url, label }: { text: string; url: string; label: string }) {
+  const href = `https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(url)}`;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      aria-label={`${label} (opens in a new tab)`}
+      className="chunk-sm inline-flex items-center gap-2 border-2 border-[#3D382E] px-4 py-2 font-mono text-xs font-bold uppercase tracking-[0.15em] text-[var(--text)] hover:text-[#FF8A3D]"
+      style={{ "--chunk-shadow": "#1B1813" } as CSSProperties}
+    >
+      Share on X ↗
+    </a>
   );
 }
 
@@ -2319,6 +2349,16 @@ function ClaimSection() {
             )}
           </>
         )}
+        <div className="mt-4 flex flex-wrap items-center gap-3 px-2 sm:px-0">
+          <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--dim)]">
+            Spread the word
+          </span>
+          <ShareOnXButton
+            text={SHARE_TEXT_CLAIM}
+            url="https://kryntar.xyz/#claim"
+            label="Share the $KRYN claim on X"
+          />
+        </div>
       </div>
     </section>
   );
@@ -2330,10 +2370,12 @@ function PromptCard({
   title,
   price,
   text,
+  steps,
 }: {
   title: string;
   price: string;
   text: string;
+  steps?: string[];
 }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
@@ -2369,9 +2411,15 @@ function PromptCard({
         {copied ? "Copied ✓" : "Copy prompt"}
       </button>
       <ol className="mt-4 list-decimal space-y-1 pl-5 text-sm text-[var(--dim)]">
-        <li>Pick a lane — free or paid.</li>
-        <li>Copy the prompt and paste it to your agent.</li>
-        <li>The mint is open — the agent checks mintOpen(), then executes right away.</li>
+        {(
+          steps ?? [
+            "Pick a lane — free or paid.",
+            "Copy the prompt and paste it to your agent.",
+            "The mint is open — the agent checks mintOpen(), then executes right away.",
+          ]
+        ).map((s) => (
+          <li key={s}>{s}</li>
+        ))}
       </ol>
     </article>
   );
@@ -2874,6 +2922,16 @@ function MintSection() {
             </tr>
           </tbody>
         </table>
+      </div>
+      <div className="mt-6 flex flex-wrap items-center gap-3">
+        <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-[var(--dim)]">
+          Spread the word
+        </span>
+        <ShareOnXButton
+          text={SHARE_TEXT_MINT}
+          url="https://kryntar.xyz/#mint"
+          label="Share the Kryntar mint on X"
+        />
       </div>
     </div>
   );
@@ -3433,16 +3491,26 @@ export function App() {
             intro="The Kryntar NFT mint runs on BNB Chain with three lanes side by side from the first block. No lane is ever locked behind another — and only one lane gives you a Legendary."
           />
           <MintSection />
-          <h3 className="pixel-h mt-10 text-sm sm:text-base">MINT WITH AN AGENT</h3>
+          <h3 id="agents" className="pixel-h mt-10 scroll-mt-24 text-sm sm:text-base">AGENTS</h3>
           <p className="mt-3 max-w-2xl text-sm leading-relaxed text-[var(--dim)]">
-            Pick a lane, copy the prompt, paste it to your agent. Every prompt
-            names the live contract address; the mint is open, so the agent
-            executes right away (it still stops if mintOpen() ever reads false).
+            Agents welcome — mint or claim with a short prompt. Copy one, paste
+            it to your agent, and it executes right away. Every prompt names
+            the live contract address and stops if the on-chain check fails.
           </p>
           <div className="mt-5 grid gap-6 md:grid-cols-2">
             <PromptCard title="SURFACE CLAIM" price="0 BNB" text={AGENT_PROMPT_FREE} />
             <PromptCard title="DEEP FORGE" price="0.0005 BNB" text={AGENT_PROMPT_DEEP} />
             <PromptCard title="LEGENDARY MINT" price="0.01 BNB" text={AGENT_PROMPT_LEGENDARY} />
+            <PromptCard
+              title="CLAIM $KRYN"
+              price="0.0001 BNB"
+              text={AGENT_PROMPT_CLAIM}
+              steps={[
+                "Replace <ID> with your Diver's number.",
+                "Copy the prompt and paste it to your agent.",
+                "One claim per Diver — the agent checks claimed() first.",
+              ]}
+            />
           </div>
         </section>
 
