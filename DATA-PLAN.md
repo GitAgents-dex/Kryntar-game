@@ -1,5 +1,17 @@
 # Data Plan
 
+## Edit — SCORES BOARD WIRED TO LIVE CONTRACT (2026-11-14, user deployed + sent address)
+
+KryntarScores is deployed on BNB Chain at
+0xb3C30e21ff0515E50711e2603453a2eE8255bA16 (deployed by the user via
+kryntar-scores-deploy.html). Verified on-chain: nft() points at the Kryntar
+Divers contract, SUBMIT_FEE() is exactly 0.0001 BNB, playerCount() is 0, and
+the deployed runtime bytecode matches the compiled artifact except for the
+immutable NFT address slots. `SCOREBOARD_ADDRESS` in App.tsx is now set, so
+the #scores section reads the live board and holders can submit scores
+(0.0001 BNB per submit, kept in the contract, owner withdraws via
+withdraw()). Sourcify verification: not verified yet at wiring time.
+
 ## Edit — ON-CHAIN SCORES BOARD, HOLDERS ONLY (2026-11-14, user: "On-chain, holder only")
 
 Player names + scores now have a shared home that needs no server: a new

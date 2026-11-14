@@ -236,7 +236,7 @@ const SELECTORS = {
  *  Empty until the contract is deployed; set to the deployed address and
  *  the scores board + on-chain submit below switch on. Never put a fake
  *  address here. */
-const SCOREBOARD_ADDRESS = "";
+const SCOREBOARD_ADDRESS: string = "0xb3C30e21ff0515E50711e2603453a2eE8255bA16";
 
 /** Function selectors of the KryntarScores contract (see
  *  contract/KryntarScores.sol). balanceOf is the NFT contract's. */
