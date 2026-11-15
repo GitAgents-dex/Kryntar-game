@@ -46,13 +46,20 @@
 <script src="https://cdn.jsdelivr.net/npm/ethers@6.15.0/dist/ethers.umd.min.js"></script>
 <script>
   const CHAIN_ID = 56;
-  const RPC = "https://bsc-dataseed.binance.org";
+  const RPCS = [
+    "https://bsc-dataseed.binance.org",
+    "https://bsc-dataseed1.defibit.io",
+    "https://bsc-dataseed1.ninicoin.io",
+    "https://bsc-dataseed2.bnbchain.org",
+  ];
   const contracts = [
     { name: "Kryntar Divers", kind: "NFT mint fees", address: "0xB77D3495d3ed4427dA78c9D0f7Cb76C21c23D9fe" },
     { name: "Kryntar Scores", kind: "Deep Dive score fees", address: "0xb3C30e21ff0515E50711e2603453a2eE8255bA16" },
     { name: "Kryn Claim", kind: "$KRYN claim fees", address: "0xF423486D0B021E457c0132b3144728DEa105f028" },
   ];
-  const ABI = ["function owner() view returns (address)", "function withdraw()", "receive() payable"];
+  const ABI = ["function withdraw()"];
+  const OWNER_SELECTOR = "0x8da5cb5b";
+  const WITHDRAW_SELECTOR = "0x3ccfd60b";
   let browserProvider = null;
   let signer = null;
   let walletAddress = "";
@@ -60,13 +67,34 @@
   const short = (a) => a ? `${a.slice(0,6)}…${a.slice(-4)}` : "—";
   const esc = (s) => String(s).replace(/[&<>\"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'\"':"&quot;"}[c]));
   function setStatus(message, type="") { const el = $("wallet"); el.textContent = message; el.className = `status ${type}`; }
-  async function publicProvider() { return new ethers.JsonRpcProvider(RPC, CHAIN_ID); }
+  async function rpc(method, params) {
+    let lastError = null;
+    for (const url of RPCS) {
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: Date.now(), method, params }),
+        });
+        if (!response.ok) throw new Error(`RPC HTTP ${response.status}`);
+        const json = await response.json();
+        if (json.error) throw new Error(json.error.message || "RPC error");
+        return json.result;
+      } catch (error) { lastError = error; }
+    }
+    throw lastError || new Error("All BNB Chain RPC endpoints failed");
+  }
+  async function readContract(item) {
+    const [balanceHex, ownerHex] = await Promise.all([
+      rpc("eth_getBalance", [item.address, "latest"]),
+      rpc("eth_call", [{ to: item.address, data: OWNER_SELECTOR }, "latest"]),
+    ]);
+    return { balance: BigInt(balanceHex), owner: ethers.getAddress(`0x${ownerHex.slice(-40)}`) };
+  }
   async function render() {
-    const provider = await publicProvider();
     const cards = await Promise.all(contracts.map(async (item, i) => {
-      const c = new ethers.Contract(item.address, ABI, provider);
       let balance = 0n, owner = "", error = "";
-      try { balance = await provider.getBalance(item.address); owner = await c.owner(); } catch (e) { error = e.shortMessage || e.message || "Read failed"; }
+      try { ({ balance, owner } = await readContract(item)); } catch (e) { error = e.shortMessage || e.message || "Failed to fetch"; }
       const isOwner = walletAddress && owner && walletAddress.toLowerCase() === owner.toLowerCase();
       const canWithdraw = Boolean(signer && isOwner && balance > 0n && !error);
       const card = document.createElement("article");
@@ -92,9 +120,8 @@
     const item = contracts[i];
     if (!confirm(`Withdraw the full BNB balance from ${item.name} to its owner wallet?`)) return;
     try {
-      const c = new ethers.Contract(item.address, ABI, signer);
       setStatus(`Withdrawing from ${item.name}…`);
-      const tx = await c.withdraw();
+      const tx = await signer.sendTransaction({ to: item.address, data: WITHDRAW_SELECTOR, value: 0 });
       setStatus(`Submitted ${short(tx.hash)}. Waiting for confirmation…`);
       await tx.wait(); setStatus(`${item.name} withdrawn successfully.`, "ok"); await render();
     } catch (e) { setStatus(e.shortMessage || e.message || "Withdraw failed", "error"); }
