@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#070708" />
+  <title>Kryntar — Withdraw</title>
+  <style>
+    :root { color-scheme: dark; --bg:#070708; --surface:#14120F; --line:#2A2721; --text:#E8E3D8; --dim:#9B968C; --orange:#FF8A3D; --green:#7CDA9A; --red:#FF7777; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,Segoe UI,sans-serif; }
+    main { width:min(920px,100%); margin:0 auto; padding:32px 20px 64px; }
+    a { color:var(--orange); }
+    header { border-bottom:2px solid var(--line); padding-bottom:24px; margin-bottom:24px; }
+    .eyebrow { color:var(--orange); font:700 11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.18em; text-transform:uppercase; }
+    h1 { margin:8px 0 10px; font-size:clamp(28px,6vw,48px); letter-spacing:.04em; }
+    p { color:var(--dim); line-height:1.55; }
+    .toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:20px 0; }
+    button { cursor:pointer; border:2px solid #000; background:var(--orange); color:#070708; padding:11px 16px; font:700 12px ui-monospace,SFMono-Regular,Menlo,monospace; text-transform:uppercase; letter-spacing:.1em; box-shadow:4px 4px 0 #3A2410; }
+    button:hover { filter:brightness(1.08); }
+    button:disabled { cursor:not-allowed; opacity:.4; filter:grayscale(1); }
+    .secondary { background:var(--text); box-shadow:4px 4px 0 #504A40; }
+    .status { min-height:22px; color:var(--dim); font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .status.ok { color:var(--green); } .status.error { color:var(--red); }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px; }
+    article { border:2px solid var(--line); background:var(--surface); padding:18px; box-shadow:6px 6px 0 #1B1813; }
+    article h2 { margin:0 0 6px; font-size:17px; letter-spacing:.04em; }
+    .kind { color:var(--orange); font:700 10px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.16em; }
+    dl { margin:18px 0; } dt { color:var(--dim); font:11px ui-monospace,SFMono-Regular,Menlo,monospace; text-transform:uppercase; letter-spacing:.12em; } dd { margin:4px 0 14px; word-break:break-all; font:13px ui-monospace,SFMono-Regular,Menlo,monospace; } .balance { color:var(--green); font-size:20px; font-weight:700; }
+    .notice { border-left:3px solid var(--orange); padding:10px 14px; background:#1B1813; color:var(--dim); font-size:13px; }
+    footer { margin-top:32px; color:var(--dim); font:12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">Kryntar · Owner tools</div>
+    <h1>WITHDRAW CONTRACT BALANCES</h1>
+    <p>Connect the owner wallet to see every contract balance and withdraw native BNB directly. Withdrawals send the contract's BNB balance to that contract's owner.</p>
+    <div class="notice">Only use this page with the owner wallet. The transaction requires a wallet confirmation and cannot be undone.</div>
+    <div class="toolbar"><button id="connectBtn">Connect wallet</button><button id="refreshBtn" class="secondary" disabled>Refresh balances</button><span id="wallet" class="status">Wallet not connected.</span></div>
+  </header>
+  <section id="contracts" class="grid"></section>
+  <footer><a href="./">Back to Kryntar</a> · BNB Chain (chainId 56) · <a href="https://bscscan.com" target="_blank" rel="noreferrer">BscScan</a></footer>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.15.0/dist/ethers.umd.min.js"></script>
+<script>
+  const CHAIN_ID = 56;
+  const RPC = "https://bsc-dataseed.binance.org";
+  const contracts = [
+    { name: "Kryntar Divers", kind: "NFT mint fees", address: "0xB77D3495d3ed4427dA78c9D0f7Cb76C21c23D9fe" },
+    { name: "Kryntar Scores", kind: "Deep Dive score fees", address: "0xb3C30e21ff0515E50711e2603453a2eE8255bA16" },
+    { name: "Kryn Claim", kind: "$KRYN claim fees", address: "0xF423486D0B021E457c0132b3144728DEa105f028" },
+  ];
+  const ABI = ["function owner() view returns (address)", "function withdraw()", "receive() payable"];
+  let browserProvider = null;
+  let signer = null;
+  let walletAddress = "";
+  const $ = (id) => document.getElementById(id);
+  const short = (a) => a ? `${a.slice(0,6)}…${a.slice(-4)}` : "—";
+  const esc = (s) => String(s).replace(/[&<>\"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'\"':"&quot;"}[c]));
+  function setStatus(message, type="") { const el = $("wallet"); el.textContent = message; el.className = `status ${type}`; }
+  async function publicProvider() { return new ethers.JsonRpcProvider(RPC, CHAIN_ID); }
+  async function render() {
+    const provider = await publicProvider();
+    const cards = await Promise.all(contracts.map(async (item, i) => {
+      const c = new ethers.Contract(item.address, ABI, provider);
+      let balance = 0n, owner = "", error = "";
+      try { balance = await provider.getBalance(item.address); owner = await c.owner(); } catch (e) { error = e.shortMessage || e.message || "Read failed"; }
+      const isOwner = walletAddress && owner && walletAddress.toLowerCase() === owner.toLowerCase();
+      const canWithdraw = Boolean(signer && isOwner && balance > 0n && !error);
+      const card = document.createElement("article");
+      card.innerHTML = `<div class="kind">${esc(item.kind)}</div><h2>${esc(item.name)}</h2><dl><dt>Contract</dt><dd>${esc(item.address)}</dd><dt>Owner</dt><dd>${esc(owner ? short(owner) : (error ? "Unavailable" : "Loading…"))}</dd><dt>Balance</dt><dd class="balance">${esc(ethers.formatEther(balance))} BNB</dd></dl><div class="status ${error ? "error" : isOwner ? "ok" : ""}">${esc(error || (walletAddress ? (isOwner ? "Connected wallet is owner." : "Connected wallet is not owner.") : "Connect owner wallet to withdraw."))}</div><button data-index="${i}" ${canWithdraw ? "" : "disabled"}>Withdraw ${esc(item.name)}</button>`;
+      card.querySelector("button").addEventListener("click", () => withdraw(i));
+      return card;
+    }));
+    const root = $("contracts"); root.replaceChildren(...cards);
+  }
+  async function connect() {
+    if (!window.ethereum) { setStatus("No wallet found. Open in MetaMask or another wallet browser.", "error"); return; }
+    try {
+      browserProvider = new ethers.BrowserProvider(window.ethereum);
+      const network = await browserProvider.getNetwork();
+      if (Number(network.chainId) !== CHAIN_ID) { setStatus("Switch wallet to BNB Chain (chainId 56).", "error"); return; }
+      signer = await browserProvider.getSigner(); walletAddress = await signer.getAddress();
+      $("connectBtn").textContent = "Wallet connected"; $("refreshBtn").disabled = false;
+      setStatus(`${short(walletAddress)} · BNB Chain`, "ok"); await render();
+    } catch (e) { setStatus(e.shortMessage || e.message || "Connection failed", "error"); }
+  }
+  async function withdraw(i) {
+    if (!signer) return;
+    const item = contracts[i];
+    if (!confirm(`Withdraw the full BNB balance from ${item.name} to its owner wallet?`)) return;
+    try {
+      const c = new ethers.Contract(item.address, ABI, signer);
+      setStatus(`Withdrawing from ${item.name}…`);
+      const tx = await c.withdraw();
+      setStatus(`Submitted ${short(tx.hash)}. Waiting for confirmation…`);
+      await tx.wait(); setStatus(`${item.name} withdrawn successfully.`, "ok"); await render();
+    } catch (e) { setStatus(e.shortMessage || e.message || "Withdraw failed", "error"); }
+  }
+  $("connectBtn").onclick = connect; $("refreshBtn").onclick = render; render();
+</script>
+</body>
+</html>
